@@ -324,7 +324,8 @@ Keep this file current: tick items when done, add items when scope changes.
         `ManyStatementWriteNotCancelled`, `TimedOutWriteNeverCancelled`, `BatchNeverCommitsWithoutCommit`,
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
         `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`; a membership write's wait never cancelled
-        nor its backend terminated: `MembershipWaitNeverTerminated`); the roles step (`RolesStepIdempotent`,
+        nor its backend terminated, at most one left per node name through `application_name`:
+        `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerName`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
@@ -339,7 +340,7 @@ Keep this file current: tick items when done, add items when scope changes.
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
       - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
-        heartbeats as keys of their own, written only by their member; an `Unknown` write pending until its never-terminated backend is gone, then decided by a `Get` (no `Confirm`: `MembershipWaitNeverTerminated`), the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a new document's version from the store's `Now` in ms (`NewMembershipDocumentStartsAboveStamps`); a claim reading a higher
+        heartbeats as keys of their own, written only by their member; an `Unknown` write pending until its never-terminated backend is gone, then settled by a `Confirm` on the same session and the entry's `write_seq` (`MembershipWaitNeverTerminated`), the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a new document's version from the store's `Now` in ms or `DaServer:Membership:InitialVersion` when higher (`NewMembershipDocumentStartsAboveStamps`); a claim reading a higher
         stored placement version re-reading the document, a stale view only forwarding (`StaleViewClaimRereadsAndForwards`);
         a version below one the node held, or a stored placement still above a fresh document, a store fault: logged,
         counted, `DaServerMembershipRegressed`, the node freezing and fencing without writing and exiting with code 75

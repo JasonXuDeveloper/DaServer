@@ -84,11 +84,17 @@ finish a step on every node before starting the next.
 suggests) or renaming the cluster starts a new membership document; the actor records stay where they are:
 
 1. Stop the whole cluster (a rolling move would split it between two documents).
-2. Change the configuration and start the nodes. The first creates the new document at a version taken from the
-   store's `Now` in milliseconds, so it starts above every placement version the old document stamped into records
-   and `Topic` subscriber stamps: claims of existing records proceed, and a subscriber stamped under the old document
-   is refused once, answered `NotSubscribed`, and subscribes again.
-3. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
+2. Check the new store's clock: its `Now` in milliseconds must be above the old document's version (read
+   `m|<cluster>` in the old store). If it is not (a clock behind, or a provider whose `Now` is not Unix time), set
+   `DaServer:Membership:InitialVersion` above that version.
+3. Change the configuration and start the nodes. The first creates the new document at the store's `Now` in
+   milliseconds, or at `InitialVersion` when higher, so it starts above every placement version the old document
+   stamped into records and `Topic` subscriber stamps: claims of existing records proceed, and a subscriber stamped
+   under the old document is refused once, answered `NotSubscribed`, and subscribes again.
+4. On a cluster rename, the Dashboard's keys (`x|<cluster>|…`: actions, the audit, the Data Protection key ring) stay
+   under the old name: copy them to the new prefix to keep the audit and the signed-in sessions, or accept losing
+   them (sign-in cookies are then invalidated).
+5. Delete the old document's keys (`m|<cluster>` and its prefix) from the old store once nothing reads them.
 
 ## Production views
 
@@ -115,7 +121,7 @@ The repository ships two starting points, checked against a running node:
   saturated shards, late ticks, GC pauses, a silent node, and target-only rules
   that never fire on today's code (`DaServerMembersDisagree` reads `daserver_cluster_view_version`,
   `DaServerNodeRequestsLow`, `DaServerAskLatencyHigh`, `DaServerOnceTooOld`, `DaServerOnceStaleAsking`,
-  `DaServerOnceCounterLow`, `DaServerOnceAskOld`, `DaServerOnceQueuedFull`, `DaServerOnceUnknownState`, `DaServerOnceSendersNearCap`, `DaServerStoreWritesBehind` (its limit is four of the node group's `DaServer:CheckpointInterval`: a group configured with a longer interval needs its own copy of the rule; when it fires, check the store's replicas first, on PostgreSQL the synchronous standbys' `pg_stat_replication.sync_state`), `DaServerRecordUnwritable`, `DaServerStoreDurabilityDropped` (the store's self-check now finds a weaker class than at start; ADR-104; below `Strict` a failover or crash may lose recent writes without any alert, which the class accepted), `DaServerStoreUnsafe` (critical, 30 s after a node reports an unsafe setting, `fsync` or `full_page_writes` off, which it reads every 10 s; nothing is refused, writes go on under the `Local` rules with no guarantee across a database host crash, and a fresh start stays not ready before it joins; turn the setting back on), `DaServerMembershipDocumentLarge` (the membership document past half the store's largest value), `DaServerMembershipWritePending` (a node's membership write pending over a minute: its later membership writes wait; a coordinator stuck past `IsolationExit` steps down), `DaServerMembershipRegressed` (critical: a node read a membership version below one it held, which a `Strict` store never commits; the node stopped and restarts with a new generation; check the membership database's failover and its synchronous standbys), `DaServerDeleteSendAfter`, and the ask recording rules: none of
+  `DaServerOnceCounterLow`, `DaServerOnceAskOld`, `DaServerOnceQueuedFull`, `DaServerOnceUnknownState`, `DaServerOnceSendersNearCap`, `DaServerStoreWritesBehind` (its limit is four of the node group's `DaServer:CheckpointInterval`: a group configured with a longer interval needs its own copy of the rule; when it fires, check the store's replicas first, on PostgreSQL the synchronous standbys' `pg_stat_replication.sync_state`), `DaServerRecordUnwritable`, `DaServerStoreDurabilityDropped` (the store's self-check now finds a weaker class than at start; ADR-104; below `Strict` a failover or crash may lose recent writes without any alert, which the class accepted), `DaServerStoreUnsafe` (critical, 30 s after a node reports an unsafe setting, `fsync` or `full_page_writes` off, which it reads every 10 s; nothing is refused, writes go on under the `Local` rules with no guarantee across a database host crash, and a fresh start stays not ready before it joins; turn the setting back on), `DaServerMembershipDocumentLarge` (the membership document past half the store's largest value), `DaServerMembershipWritePending` (a node's membership write pending over a minute: its later membership writes wait (heartbeats, its own restart permit, and on the coordinator deaths and re-placements); nothing steps down, and in a standby outage it fires on every node), `DaServerMembershipRegressed` (critical: a node read a membership version below one it held, which a `Strict` store never commits; the node stopped and restarts with a new generation; check the membership database's failover and its synchronous standbys), `DaServerDeleteSendAfter`, and the ask recording rules: none of
   their metrics exist yet). Check it with `promtool check rules` before loading it. Load it with `rule_files:`,
   or wrap the groups in a `PrometheusRule` for the Prometheus Operator. A rule that compares a reading against a number carries that
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.

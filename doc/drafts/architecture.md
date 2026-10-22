@@ -652,7 +652,8 @@ in short:
   - **The document** (`m|cluster`) holds the table version, one entry per node incarnation not yet re-placed (name, node generation,
     address, server type, status `Joining`, `Active`, `ShuttingDown` or `Dead`, the suspicions against it with the
     suspecting member, its generation and the store's `Now` when written, so every node judges a vote's age by one
-    clock, `restart_until` for a granted hot restart and its deadline, `dead_seen_at` (below) and the start time), the
+    clock, `restart_until` for a granted hot restart and its deadline, `dead_seen_at` (below), the start time and its
+    `write_seq`, the count of document writes that node has made, which every one of its writes raises), the
     slot table and its per-type placement versions, and the configuration tables' versions: tens of KB for hundreds
     of members and 4,096 slots. Its size is bounded by the live members, since dead entries leave it at re-placement
     (below); every node exports its size and the provider's `MaxValueBytes` (gauges `daserver.membership.document` and
@@ -679,11 +680,13 @@ in short:
     once. Until
     then it hosts no slots and serves no clients. If a member does not answer, it does not become `Active` and retries
     (a node cut off from part of the cluster never joins it). The first node of a cluster creates the document, at
-    a version taken from the store's `Now` in milliseconds rather than 1: versions move far slower than once a
-    millisecond, so a new document (membership moved to another store, or a cluster renamed: operations.md) starts
-    above every placement version an earlier document stamped into records and `Topic` subscriber stamps, and a claim
-    of an old record never reads as a store fault (the old stamps are simply lower; subscribers heal through
-    `NotSubscribed`).
+    a version taken from the store's `Now` in milliseconds rather than 1, or `DaServer:Membership:InitialVersion` when
+    that is higher: versions move far slower than once a millisecond, so a new document (membership moved to another
+    store, or a cluster renamed: operations.md) starts above every placement version an earlier document stamped into
+    records and `Topic` subscriber stamps, and a claim of an old record never reads as a store fault (the old stamps
+    are simply lower; subscribers heal through `NotSubscribed`; test `NewMembershipDocumentStartsAboveStamps`). That
+    holds when the new store's clock is ahead of the old document's creation plus its changes; a store whose clock is
+    behind, or a provider whose `Now` is not Unix time, needs the floor set above the old document's version.
     No seeds are needed for membership: the table is where nodes find each other.
   - **Failure detection**: every `Active` member probes up to `DaServer:Membership:ProbedNodes` (10) others, its
     successors on a ring of the active members' hashed identities, over the node links every
@@ -701,10 +704,10 @@ in short:
     always wins over the node's own copy, and after any reconnect of its membership client a node reads the table
     before it claims. Membership needs a `Strict` store, so the version a node reads never goes below one it held: a
     commit is invisible to other sessions while it waits for its standby, and the provider never cancels or ends that
-    wait for a membership write (section 4's PostgreSQL provider), so no node acts on a membership write the store can
-    still lose. A read that does return a version **lower** than the highest the node held, or a claim whose `Get`
+    wait for a membership write (section 4's PostgreSQL provider), so a reader sees only writes the standby holds and
+    a writer acts on its own only once it is durable (below), save the store fault that follows. A read that does return a version **lower** than the highest the node held, or a claim whose `Get`
     shows a stored placement version above the node's table version even after it reads the document again (a stale
-    view is not that: the fresh view decides, usually a forward), means the store broke `Strict` (on PostgreSQL, a
+    view is not that: the fresh view decides, usually a forward; test `StaleViewClaimRereadsAndForwards`), means the store broke `Strict` (on PostgreSQL, a
     crash-restart in place or a fast shutdown ending the wait, then a failover before the standby received the
     commit; quorum-failover tooling in strict mode makes this rarer, it does not rule it out). That is a store fault,
     not a state the framework repairs: the node logs `MembershipVersionRegressed`, counts it
@@ -716,12 +719,14 @@ in short:
     cluster may restart this way. If membership's store drops below `Strict` while nodes serve, they keep running and
     `DaServerStoreDurabilityDropped` fires; a regression that follows is the same store fault.
   - **Membership writes land like data writes**: the writer acts on a write (a death, a `dead_seen_at` stamp, a
-    re-placement version, a restart permit) and pushes it to peers only once it is `Landed`. Membership has no
-    `Confirm`: one that ends `Unknown` keeps its backend, which the provider never ends (section 4), and stays pending
-    until that backend is gone (the provider finds it by its `(pid, backend_start)`); a plain `Get` then decides, by
-    the document's version and content against what was written, and the writer never acts on it before. A
-    `Confirm` could not decide sooner: its own read can miss a commit that is still waiting and lands after it. The
-    lease rests only on plain `Get`s of the document, so a pending write never costs the node's lease. At most one
+    re-placement version, a restart permit) and pushes it to peers only once it is `Landed`. One that ends `Unknown`
+    keeps its backend, which the provider never ends (section 4), and stays pending until that backend is gone: a
+    `Confirm` while it waits could read the document before the waiting commit lands. Once a lookup by its
+    `(pid, backend_start)` finds it gone, the same session runs `Confirm` of the document, whose own commit waits for
+    a standby, so what it shows is durable even when the wait ended early (a fast shutdown, a crash-restart); the
+    write landed if and only if the node's entry there has a `write_seq` at or above the one it wrote, whatever other
+    writes moved the version since. The writer never acts on it before. The lease rests only on plain `Get`s of the
+    document, so a pending write never costs the node's lease (test `UnknownMembershipWriteNeverHoldsLease`). At most one
     membership write per node is in flight, so while one stays pending (a standby outage, the store slow, or failing
     writes) every later one from that node waits: heartbeats skip, its own restart permit waits, and on the
     coordinator deaths, `dead_seen_at` stamps and re-placements wait too; nothing steps down, since in a standby
@@ -838,7 +843,7 @@ in short:
     prefix), so churn never grows the document; those keys and the members' heartbeat keys are deleted, compared on
     their versions, by the coordinator after `DaServer:Membership:DefunctRowAge` (7 days, for diagnostics) (test
     `MembershipDocumentBoundedUnderChurn`).
-  - **Without a store**: the in-memory store serves a single node (a local run, a starter without a database, an
+  - **Without a store**: the in-memory store, which is `Strict` (nothing outlives the process to roll back), serves a single node (a local run, a starter without a database, an
     `AllInOne` deployment) and `TestCluster`, whose in-process nodes share one instance (wrapped per node in a
     fault-injecting `IStore` that tests use to cut one node off the store, delay its reads or stall it). A
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
@@ -1075,7 +1080,7 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   entry is deleted later, compared on its version, by `DueScan` or the census, only once the header is at or above
   the version the entry names (or carries another token) and disagrees with it, so cleanup never removes the entry of
   a record still in flight (test `DueEntryNeverLostToCleanup`).
-- **Confirm** settles a data write's `Unknown` and `AlreadyLanded` (section 2's Tick-end write); a membership write has none: it is decided by a `Get` once its backend is gone (section 2's membership).
+- **Confirm** settles a data write's `Unknown` and `AlreadyLanded` (section 2's Tick-end write), and a membership write's `Unknown` once its never-ended backend is gone (section 2's membership).
 - **Delete** (`root.Delete()`, once its wait has passed, section 2's `Deleting`): one guarded write, the tombstone put
   on the record key as head (the epoch, owner and seed, `forgetUntil` = the `Now` of the read that starts the
   deletion + `MaxAskTimeout + 3 × ClockSkew`), compared on the last landed version, with `orphan_after` (the same
@@ -1165,6 +1170,7 @@ GRANT USAGE ON SCHEMA :schema TO :runtime_role, :membership_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_kv TO :runtime_role;  -- deletes come only from the
 GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_membership_kv TO :membership_role;  -- framework, compared
 GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_confirm TO :runtime_role, :membership_role;  -- on the version
+-- (membership's Confirm settles an Unknown write once its backend is gone)
 -- with AddDaServerDashboard only:
 CREATE TABLE IF NOT EXISTS :schema.daserver_dashboard_kv (LIKE :schema.daserver_kv INCLUDING ALL);
 GRANT USAGE ON SCHEMA :schema TO :dashboard_role;
@@ -1253,7 +1259,7 @@ generation, or the Dashboard replica's name, and the connection's backend pid, s
 a `Confirm` never queues behind another's synchronous wait. Rows untouched for a day are deleted
 (`DELETE FROM :schema.daserver_confirm WHERE at < clock_timestamp() - interval '1 day'`, harmless to run twice) on
 each database by whoever writes there: the expiry member for the actor store, the membership coordinator on
-membership's database, the Dashboard's active replica on its own; on one database all three run it:
+membership's database (its `Confirm`s settle membership writes whose backend ended), the Dashboard's active replica on its own; on one database all three run it:
 
 ```sql
 BEGIN;
@@ -1297,9 +1303,14 @@ is never cancelled and its backend never terminated, because a commit waiting fo
 sessions until the wait ends and ending it early is what makes it visible without the standby (checked on 16: a
 waiting row is not seen by another session and is seen once its backend is terminated); the stuck backend keeps
 waiting until the standby answers. The write stays pending meanwhile: the membership client looks its backend up by
-`(pid, backend_start)` every `StatementTimeout` and, once it is gone, decides by a plain `Get` (checked on 16: the
-lookup works as the membership role, and the `Get` after the backend ends shows the row). No `Confirm` is used for it,
-since a `Confirm`'s read can miss a commit still waiting that lands after it (test `MembershipWaitNeverTerminated`). The cancelled-wait warning ("committed locally"), a dead socket or a
+`(pid, backend_start)` every `StatementTimeout` and, once it is gone, runs `Confirm` on that same session (lookup
+first), whose marker commit waits for a standby, and reads the node's `write_seq` from what it shows (checked on 16:
+the lookup works as the membership role, and a read after the backend ends shows the row; test
+`MembershipWaitNeverTerminated`). Every membership connection sets `application_name` to the node's name, and a
+process waits before its first membership write, as start progress, until no earlier backend with its name is still
+waiting in `COMMIT` (`SELECT 1 FROM pg_stat_activity WHERE application_name = :node AND wait_event = 'SyncRep'`; a role
+sees its own backends' `application_name`, `wait_event` and `backend_start`), so a process restarted during a standby
+outage never stacks a second stuck backend beside its name's first (test `MembershipLeftoverBoundedPerName`). The cancelled-wait warning ("committed locally"), a dead socket or a
 gone backend while `COMMIT` waits is `Unknown`; a clean `COMMIT` is `Landed`. Every data source connects to the
 primary only (`Target Session Attributes=read-write`, or a single read-write endpoint), so neither a lease read nor
 a `Confirm` is answered by a standby (test `DataSourcesRequireReadWrite`). Membership uses its own data source on
@@ -1313,8 +1324,8 @@ every acknowledged commit and waits otherwise (Patroni 4's `synchronous_mode: qu
 failover, 1.27 and later, with `postgresql.synchronous` `method: any` and `dataDurability: required`; a managed
 service's zone-redundant mode that promotes only a replica holding every acknowledged commit). With no synchronous
 standby up, writes, claims and membership writes pause in `COMMIT` rather than degrade: lease reads still answer, so
-nothing freezes, but heartbeats skip, deaths and re-placements wait, and `DaServerStoreWritesBehind` and
-`DaServerMembershipWritePending` fire on every node.
+nothing freezes, but heartbeats skip, deaths and re-placements wait, `DaServerMembershipWritePending` fires on every
+node and `DaServerStoreWritesBehind` on every node with unsaved changes.
 The self-check reads `synchronous_commit`, `synchronous_standby_names` and `pg_stat_replication` (whose `state` and
 `sync_state` PostgreSQL shows only to members of `pg_read_all_stats`, which the roles step grants), and declares
 `Strict` only when they match and the operator has stated quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`,
@@ -1341,8 +1352,9 @@ LIMIT` per role, sized from the most nodes the cluster may run (per group the au
 rollout surge, plus one warm standby process per stateful node) times its pool size, plus per node the backends it can
 leave in `COMMIT` after a socket dies (`2 × WritesInFlight` per world plus `ActivationSlots` for the runtime role, of
 which a node terminates its own on reconnecting; for the membership role one per node process, its one write's, never
-terminated, so a node that restarts can leave one beside its new process's, plus that process's lookup connection;
-a lost host's stay until the standby returns),
+terminated, and at most one per node name, since a new process waits until its name's earlier backend has ended
+before its first membership write, plus that process's lookup connection; a lost host's stay until the standby
+returns),
 failing, with the numbers, when the shares plus the Dashboard's, the owner's and the superuser's reserve exceed
 `max_connections` (or granting `pg_use_reserved_connections` to the membership role when `reserved_connections` is
 configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connection_check_interval = '10s'`,
