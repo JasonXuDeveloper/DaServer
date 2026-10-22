@@ -23,7 +23,7 @@ Keep this file current: tick items when done, add items when scope changes.
 12. The ECS rewrite (ADR-081, the "ECS rewrite" entry under "Open cleanup" below; done where W does not replace it).
 13. W — refactor to the programming model ([drafts/programming-model.md](drafts/programming-model.md),
     [drafts/architecture.md](drafts/architecture.md)) on EasyEcs 4.7 (ADR-082 to ADR-098). Breaking; each step
-    proven before the next (W, not R: the requirement ids R0-R11 are taken).
+    proven before the next (W, not R: the requirement ids R0–R13 are taken).
     W10 runs last, after W12 and N9. Each step updates design.md and README for what it lands and deletes its rows
     from [drafts/architecture.md](drafts/architecture.md) section 9, so the docs stay true between steps; W10 moves
     what is left.
@@ -294,7 +294,9 @@ Keep this file current: tick items when done, add items when scope changes.
       - membership and fencing: the membership table (Orleans' protocol, architecture.md section 4): the feature point
         `IMembershipTable` with the PostgreSQL implementation (`daserver_members`, `daserver_membership`, versioned CAS
         transactions committed as data writes are (ADR-101), a lower version read after a failover adopted and logged:
-        `MembershipVersionRegressionAfterFailoverAdopted`, created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
+        `MembershipVersionRegressionAfterFailoverAdopted`, the highest version held raised past before the next claim and the table
+        re-read after a reconnect; one membership write in flight, `i_am_alive` skipped while one is pending, one of the two
+        connections kept for reads: `MembershipReadsAnswerWhileCommitWaits`; created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
         snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
@@ -308,8 +310,10 @@ Keep this file current: tick items when done, add items when scope changes.
         than one; the fault-injecting per-node `IMembershipTable` in `TestCluster`; no seeds; the epoch claim with owner name and generation (two columns) and placement version in one upsert, strict placement
         versions with `Fence` (bumped on every placement change, a migration's arrival writing `GREATEST`), idempotent
         claims (a not-taken result whose row meets the condition, an empty result and a no-insert `NoActor` are run
-        again; a timed-out claim is cancelled before its retry, which notifies the owner remembered from before the
-        first attempt), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
+        again; a claim is never cancelled, its `COMMIT` sent on its own and acted on only when clean, one that ends
+        unknown run again and still notifying the owner remembered from before the first attempt, claims waiting with
+        the writes while no standby is up: `TimedOutClaimConfirmedByRerun`; on PostgreSQL 16 and 17 the displaced owner
+        from the row locked first, on 18 from `old`), `StoreDegraded`, `ActivationSlots`, `ActivationFailed`;
       - activation: placeholder roots with their mail bounded by `MaxWaitingMail`, `[ActivatedBy<T>]` (a key's first
         activation only; `Wake` and the `[JoinOnConnect]` join always activate; mail that may not create a key claims without the
         `INSERT` branch), the handoff before a claim (`Arriving`, `HandoffQuery`) for keys of a slot just received, `Pending` with `MaxPending`, the idle scan as
@@ -319,13 +323,17 @@ Keep this file current: tick items when done, add items when scope changes.
         write-generation CAS, `WriteNow` and `DaServer:CheckpointInterval` (staggered by the key's hash, oldest unsaved
         first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, writes capped by
         `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, store-level errors (every SQLSTATE but `22xxx`, `23xxx`,
-        `54xxx`) retried with a backoff (ADR-101: a write is one pipelined batch with its `COMMIT` inside and never
-        cancelled, `57014` driving the halving; the client deadline `StatementTimeout` times the data statements, `COMMIT`
-        excluded, no progress deadline, the connection closed at it and the outcome unknown: `ManyStatementWriteNotCancelled`;
-        a half-open connection found by `client_connection_check_interval` and keepalive: `HalfOpenWriteEndsAtScaledDeadline`;
-        `COMMIT` with `statement_timeout = 0` and the roles' `transaction_timeout = 0`; an unknown outcome, and a retry that
-        reads its write back, released only after a confirming rewrite under a new write generation commits without the
-        cancelled-wait warning: `SyncWaitCancelledReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`; the three
+        `54xxx`) retried with a backoff (ADR-101: a write's data statements are one pipelined batch and its `COMMIT` a message of its own once
+        their results are back, nothing ever cancelled, `57014` driving the halving; the client deadline `StatementTimeout`
+        times the data statements, no progress deadline, the connection closed at it before any `COMMIT` and nothing
+        committed: `ManyStatementWriteNotCancelled`; `COMMIT` with no client deadline, never cancelled or closed by the node:
+        `TimedOutWriteNeverCancelled`; a dead socket found by keepalive and `TCP_USER_TIMEOUT` (30 s):
+        `HalfOpenWriteEndsAtScaledDeadline`, `HalfOpenCommitEndsByTcp`; at most `WritesInFlight` writes and as many solo
+        retries per world in `COMMIT`, the runtime role's `CONNECTION LIMIT` sized for them; an unknown outcome of write g,
+        and a retry refused because the row already carries g, released only after the confirming write `SET write_gen =
+        g + 1 … WHERE epoch = e AND write_gen = g` commits cleanly (no row: another epoch fences, a lower `write_gen` resends
+        write g): `SyncWaitCancelledReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`,
+        `ConfirmFindsWriteAbsentResends`; the three
         data sources on `Target Session Attributes=read-write`: `DataSourcesRequireReadWrite`), row-deterministic ones
         bisected to the bad root, ruled unwritable only when the rest landed and then retried alone outside the slots (solo
         retries at most `WritesInFlight` per world: `SoloRetriesCappedPerWorld`), more
@@ -410,7 +418,7 @@ Keep this file current: tick items when done, add items when scope changes.
         `OnceInFlight` allow and no earlier row to that target is queued, in memory or paged out (`AskSentInItsOwnWrite`,
         `SentInsertNeverOvertakesQueued`); no write budget: a root's write is one transaction of several statements
         (records first, then row statements chunked by `StatementBytes`, each joined to its record's new write
-        generation), sent in one round trip (`RootRowChangesSpanStatementsInOneTransaction`, `FencedRootRowsUnchanged`),
+        generation), sent in two round trips, the statements then `COMMIT` (`RootRowChangesSpanStatementsInOneTransaction`, `FencedRootRowsUnchanged`),
         so every item, system and reaction runs; a started item's cap `[ActorOptions(AsksPerItem)]` (16) and
         `Once:BytesPerItem` (1 MiB), the call past it throwing deterministically (`AsksPerItemThrowsDeterministically`);
         retry updates going with the next write; a row answered in a write sent only as a deletion, the delete a separate
@@ -561,7 +569,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `BatchedWriteMissingRowFences`, `SchemaJobRerunsIdempotently`, `SweepWalksTableOnce` (key-set batches, by the coordinator), `ArmVoidedByHandoff`,
       `SchemaGrantsRuntimeRoleFromConnectionString` (the members tables too), `SchemaQualifiesEveryObject` (a role
       whose `search_path` lacks the schema), `OwnerColumnsMapUnderAot`, `NotTakenClaimMeetingConditionRetries`,
-      `NoInsertClaimNoActorRaceRetried`, `TimedOutClaimCancelledThenNotifiesDisplacedOwner`,
+      `NoInsertClaimNoActorRaceRetried`, `TimedOutClaimConfirmedByRerun`,
       `BatchedWriteLowerWriteGenAtSameEpochRetried`, `BatchedWriteLandedWriteCountsAsWritten`,
       `StandbyHandoverPauseUnder300ms`, `ListeningSocketsPassedOverNoUnboundGap` (backlog kept; Kestrel re-bound only where
       `ListenHandle` refuses), `NodeLockDecidesRole`, `ParkedInstanceTakesLockWhenNodeDies`, `ParkedInstanceRefusesHandshake`,
@@ -619,7 +627,7 @@ Keep this file current: tick items when done, add items when scope changes.
       epoch while the counter restarts), `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
       `HeldOutputCapAnswersBusy`, `ExpiredHeldReplyDropped`, `HeldLatestReplaced`, `RepeatCommitWaitsForEarlierWrite`,
       `MigrationConvergesWhileRootCommitsEveryTick`, `PoisonRowBisectedRestLands`, `OversizeRecordUnwritable`,
-      `StatementBytesCapped`, `RowsSortedNoDeadlockWithStaleOwner`, `TimedOutWriteCancelledBeforeRetry`,
+      `StatementBytesCapped`, `RowsSortedNoDeadlockWithStaleOwner`, `TimedOutWriteNeverCancelled`,
       `CheckpointStormDrainsOldestFirst`, `CheckpointsKeepShareUnderCommitFlood`, `BacklogPausesIntake`,
       `GracefulStopPastBudgetLogsUnwritten`, `MembershipOnOwnDataSource`, `RecoveryRampsStoreTraffic`,
       `RecoveringNodeIgnoresIsolatedVotes` (no cascade of deaths after a two-minute outage),
@@ -928,10 +936,13 @@ Keep this file current: tick items when done, add items when scope changes.
       schema-qualified), nodes on a DML-only role (the actor and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
       Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
-      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL a primary and
-      one synchronous standby replicating strictly (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, writes pause without
-      a standby; the local `aspire run` single node exempt), the roles step setting `transaction_timeout = 0` and
-      `client_connection_check_interval`, `Target Session Attributes=read-write` on every data source DA wires;
+      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL (16 or later) a primary
+      and two standbys replicating strictly (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, so one standby's maintenance
+      pauses nothing, the samples adding a PodDisruptionBudget through the publisher hook; writes pause without a
+      standby; the local `aspire run` single node exempt), the roles step setting `client_connection_check_interval` and,
+      on 17 and later only (`server_version_num >= 170000`), `transaction_timeout = 0` (a run on PostgreSQL 16 passes),
+      the schema Job ending with a cleanly committed schema comment, the Dashboard's audit intent committed before its
+      action row, `Target Session Attributes=read-write` on every data source DA wires;
       the upgrade check a plain Job started by the deploy step (N9); load generators (`bots`, `crowd`) as Jobs or left
       out of publish (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes and 2 s probe
       timeouts; no service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the

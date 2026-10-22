@@ -1096,12 +1096,14 @@ Replaced by ADR-081.
     `int8send(key)`. The slot is the key's placement slot (ADR-074), computed by the node with the hash placement uses,
     so SQL never hashes.
   - **Claim:** an activation claims the epoch and reads the record in one upsert (`INSERT … ON CONFLICT (type_id, key)
-    DO UPDATE … WHERE … RETURNING new.epoch, new.record, old.owner`, PostgreSQL 18): it inserts a placeholder row for
+    DO UPDATE … WHERE … RETURNING new.epoch, new.record, old.owner` on PostgreSQL 18; on 16 and 17 the claim's
+    transaction first locks the row with `SELECT … FOR UPDATE` and the locked row's owner is the displaced one;
+    `COMMIT` is sent on its own, ADR-101): it inserts a placeholder row for
     a new key, raises the epoch, resets `write_gen` and takes the owner only with a strictly newer placement version
     (or the same version and owner, a retry), and a displaced owner gets `Fence(key, epoch)` at once. A migration's
     arrival claims with an `UPDATE` comparing the epoch it carries, writing `GREATEST(stored, seen)` placement.
   - **Writes:** each world writes the roots due at a tick end in writes over `unnest` arrays, each one transaction of
-    several statements in one round trip (the records' compare and swap, then the roots' row statements, each applying
+    several statements in two round trips (the statements, then `COMMIT`, ADR-101; the records' compare and swap, then the roots' row statements, each applying
     only where its record landed), split between roots at 512 roots (a root's record and row changes never split), at
     most `DaServer:Store:WritesInFlight` writes in flight per world (roots beyond wait for the next round), every
     row a CAS on `(type_id, key)`, the epoch and `write_gen < :write_gen`; the rows not updated come back as stored. A
@@ -1147,7 +1149,7 @@ Replaced by ADR-081.
   - The key as two `bigint` columns: fixed width, but every key pads to 16 bytes and the primary key has three
     columns; `bytea` holds every shape in one.
   - Event sourcing: out of core; it can be built as a pattern on actors.
-- Consequences: one write (one transaction, one round trip) per 512 changed actors per world per tick end, at most `Store:WritesInFlight` in flight
+- Consequences: one write (one transaction, two round trips) per 512 changed actors per world per tick end, at most `Store:WritesInFlight` in flight
   per world; a stale owner can never overwrite the new one, nor a late statement a newer state; `DueScan` costs one
   index range per owned `(type, slot)` pair. A store
   outage delays deactivations and stops, bounded by the stop budget. Records are opaque bytes for performance;
@@ -2786,12 +2788,12 @@ Replaced by ADR-098.
     `DaServer:Store:StatementBytes` of records (a root's record and row changes never split: its row changes go in as many
     row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; store-level errors (every SQLSTATE but
     `22xxx`, `23xxx`, `54xxx`: a timeout, a lock, a lost connection, a read-only primary, a revoked grant, a schema mismatch)
-    retry the same bytes with a backoff (1 s doubling to 1 min, the slot released between attempts; a write is one
-    pipelined batch with its `COMMIT` inside and is never cancelled: the server's `statement_timeout` ends a data statement
-    (`57014`, which drives the halving), the client deadline is `StatementTimeout` times the write's data statements
-    (PostgreSQL returns a pipelined batch's results only at its Sync), and at that deadline the connection is closed and
-    the outcome is unknown; `COMMIT` runs with `statement_timeout = 0` and waits for the synchronous standby (ADR-101), and
-    an unknown outcome releases no held output until a confirming rewrite commits durably), and a row-deterministic one bisects the write between roots to its one
+    retry the same bytes with a backoff (1 s doubling to 1 min, the slot released between attempts; a write's data
+    statements are one pipelined batch and its `COMMIT` is sent on its own once their results are back, and nothing is
+    ever cancelled: the server's `statement_timeout` ends a data statement (`57014`, which drives the halving), the
+    client deadline is `StatementTimeout` times the write's data statements, and at that deadline, before any `COMMIT`,
+    the connection is closed and nothing committed; `COMMIT` has no client deadline and waits for the synchronous
+    standby (ADR-101), and an unknown outcome releases no held output until a confirming write commits cleanly), and a row-deterministic one bisects the write between roots to its one
     bad root, ruled unwritable (`RecordUnwritable`, then retried alone outside the write slots, staying unwritable when that
     retry fails the same way) only when the rest landed, more than a quarter of a write of at least 8 roots failing
     that way meaning the store is failing, so one root never blocks a world's writes and a sick store never hides as
@@ -3251,10 +3253,13 @@ Replaced by ADR-098.
 - Context: a root's held output (replies, sends, pushes of a `Commit` item) leaves only once its write is durable, and
   a failover must never lose a write whose effects already left. With asynchronous replication a promoted standby
   misses the primary's last commits, so output already released describes state that no longer exists. Synchronous
-  replication alone does not close it: a cancelled or terminated synchronous-replication wait (a cancel, a lost
-  connection, `statement_timeout` or `transaction_timeout` firing during `COMMIT`) leaves the commit visible on the
-  primary before any standby has it (checked on PostgreSQL 16: a terminated wait made the write visible with the
-  standby down). So a re-read that finds the write proves visibility, not durability; and a read, an xid-only
+  replication alone does not close it: a cancelled or terminated synchronous-replication wait (a cancel request,
+  `pg_terminate_backend`, `transaction_timeout` on PostgreSQL 17 and later) leaves the commit visible on the primary
+  before any standby has it (checked on PostgreSQL 16 with the standby down: a cancel and a terminate each made the
+  write visible). `statement_timeout` never fires during `COMMIT` (PostgreSQL stops it before committing), and a client
+  that goes away does not end the wait: the backend stays in it, holding its row locks and its connection,
+  `client_connection_check_interval` notwithstanding (checked on PostgreSQL 16, more than 36 s after the client was
+  killed). So a re-read that finds the write proves visibility, not durability; and a read, an xid-only
   transaction or a compare-and-set that updates 0 rows writes no WAL and never waits for the standby, so it proves
   nothing either.
 - Decision:
@@ -3263,24 +3268,40 @@ Replaced by ADR-098.
     (Patroni `synchronous_mode: true` with `synchronous_mode_strict: true`, CloudNativePG `postgresql.synchronous` with
     `dataDurability: required`, the managed equivalents), and with no synchronous standby writes pause rather than
     degrade to asynchronous: a data-only outage (`DaServerStoreWritesBehind`, the stated E3 exception). What
-    `DaServer.Aspire` publishes is a primary and one synchronous standby; a single-node development store (the local
-    `aspire run`) is exempt.
+    `DaServer.Aspire` publishes is a primary and two standbys under `ANY 1`, so maintenance on one standby pauses
+    nothing (the samples add a PodDisruptionBudget through the publisher hook); a single-node development store (the
+    local `aspire run`) is exempt. The minimum is PostgreSQL 16.
   - **All three data sources connect only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to.
-  - **A write is never cancelled**: one pipelined batch with its `COMMIT` inside; `SET LOCAL statement_timeout = 0`
-    before `COMMIT`, and the runtime and membership roles carry `transaction_timeout = 0` (PostgreSQL 17 and later), so
-    nothing the server times ends a synchronous wait; the server's `statement_timeout` ends a data statement (`57014`,
-    which drives the write halving); the client deadline is `StatementTimeout` times the write's data statements,
-    `COMMIT` excluded, and at it the connection is closed (never a CancelRequest) and the outcome is unknown.
-  - **Durability confirms release**: after any unknown outcome the root runs a confirming write, its record rewritten
-    under a new write generation (a real `UPDATE` compared on the epoch, which writes WAL and waits for the standby);
-    held output is released only when that `COMMIT` returns without the cancelled-wait warning. If the compare finds
-    the earlier write absent, the same bytes are written again; a confirmation that ends unknown is confirmed again.
-    The ordinary retry that reads its write back as landed takes the same confirming write before it releases.
-  - **Membership writes commit the same way**: the confirming write is the version row's next compare-and-set; a
-    membership version read lower than the last one seen (a failover that lost an asynchronous tail on a store not
-    meeting this rule) is adopted and logged (`MembershipVersionRegressed`), never treated as an error loop.
+  - **A write is never cancelled, and `COMMIT` is a message of its own**: the data statements go as one pipelined
+    batch, and `COMMIT` is sent only once their results are back, so the client always knows which it waits on. The
+    server's `statement_timeout` ends a data statement (`57014`, which drives the write halving); the client deadline
+    is `StatementTimeout` times the write's data statements, and at it, before any `COMMIT`, the connection is closed
+    (never a CancelRequest) and nothing committed. `COMMIT` has no client deadline and the node never cancels it or
+    closes its connection; a dead socket is found by TCP (keepalive while the answer is awaited, `TCP_USER_TIMEOUT`
+    while data is unacknowledged, about 30 s) and is an unknown outcome. On PostgreSQL 17 and later every DaServer role
+    carries `transaction_timeout = 0` (the roles step sets it only when `server_version_num >= 170000`), so nothing
+    the server times ends a synchronous wait. A backend left waiting after its socket died keeps its locks and a
+    connection; at most `WritesInFlight` writes and as many solo retries per world are ever in `COMMIT`, and the runtime
+    role's `CONNECTION LIMIT` holds room for them. Claims, membership writes, the Dashboard's writes and the schema Job's
+    last step commit the same way and act only on a clean commit: a claim whose commit ended unknown is run again and
+    still notifies the displaced owner it remembered; while no standby is up, claims wait with the writes.
+  - **Durability confirms release**: after an unknown outcome of write g the root runs a confirming write, `UPDATE …
+    SET write_gen = :g + 1 WHERE … AND epoch = :e AND write_gen = :g`, a real `UPDATE` that writes WAL and waits for
+    the standby past the earlier commit; it is a record write (the root is `Writing`, and it consumes generation g+1).
+    Held output up to g is released only when it updates one row and its `COMMIT` returns cleanly. When it updates no
+    row the root reads its row: another epoch fences the root; a `write_gen` below g means write g never landed, and
+    write g is sent again with its row changes. A read alone never releases; a confirmation that ends unknown is
+    confirmed again. A retry of write g refused because the row already carries g takes the same confirming write
+    before it releases.
+  - **Membership writes commit the same way**: the confirming write is the version row's next compare-and-set; at
+    most one membership write per node is in flight (`i_am_alive` skipped while one is pending) and one of the
+    membership data source's two connections is kept for reads, so a commit waiting for the standby never starves the
+    lease's reads. A membership version read lower than the last one seen (a failover that lost an asynchronous tail on
+    a store not meeting this rule) is adopted and logged (`MembershipVersionRegressed`), never treated as an error
+    loop; the node keeps the highest version it held, raises the version row above it before it claims again, and
+    re-reads the table after any reconnect before claiming.
   - Solo retries (timing-out and unwritable roots alike) run at most `WritesInFlight` per world at once, so after an
     outage they never crowd claims and page-ins out of the runtime pool.
 - Alternatives:
@@ -3290,10 +3311,17 @@ Replaced by ADR-098.
     failover then loses.
   - Cancelling a timed-out write before `COMMIT`: a cancel races `COMMIT` in a pipelined batch, and once `COMMIT` is
     in the batch a cancel that lands in the synchronous wait is exactly the visible-not-durable case.
+  - `COMMIT` inside the pipelined batch (one round trip): the batch's results arrive only at its Sync, so the client
+    cannot tell slow data statements from a commit waiting for the standby; a deadline over both closes connections
+    whose backends stay in the synchronous wait with their locks, until the role's connections run out.
+  - A client deadline on `COMMIT`: ending it ends nothing on the server, and a closed connection leaves the backend
+    waiting; TCP finding a dead socket is the only end the client needs.
   - Degrading to asynchronous when the standby is gone (Patroni's non-strict mode): keeps writes flowing by giving up
     the guarantee silently.
 - Consequences: architecture.md section 2 and deployment.md's Database row state it, requirements state it
   (production store replication), roadmap W6 and W12 build it (tests `SyncWaitCancelledReleasesOnlyAfterConfirm`, the
-  primary up and the standby down; `RetriedWriteConfirmedBeforeRelease`; `MembershipVersionRegressionAfterFailoverAdopted`;
-  `SoloRetriesCappedPerWorld`; `DataSourcesRequireReadWrite`), and a commit's latency includes one round trip to the
-  standby.
+  primary up and the standby down; `RetriedWriteConfirmedBeforeRelease`; `ConfirmFindsWriteAbsentResends`;
+  `TimedOutWriteNeverCancelled`; `HalfOpenCommitEndsByTcp`; `TimedOutClaimConfirmedByRerun`;
+  `MembershipVersionRegressionAfterFailoverAdopted`; `MembershipReadsAnswerWhileCommitWaits`; `SoloRetriesCappedPerWorld`;
+  `DataSourcesRequireReadWrite`), and a commit's latency includes one more client round trip (`COMMIT` on its own) and
+  one round trip to the standby.
