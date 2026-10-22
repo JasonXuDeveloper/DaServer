@@ -308,7 +308,7 @@ Keep this file current: tick items when done, add items when scope changes.
         start waits not ready before its membership join, a serving node or a hot restart's standby goes on under the
         `Local` rules (`NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
         `DashboardStoreBelowStrictRefusedWithoutOptIn`,
-        `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
+        `SelfCheckLowersClass`, `ProductionIsAnyNonDevelopmentEnvironment`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
         `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
         proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
@@ -329,11 +329,16 @@ Keep this file current: tick items when done, add items when scope changes.
         process (a repeated `Confirm` or an `Unknown` heartbeat waits for the earlier backend to be gone:
         `RepeatedConfirmWaitsForEarlierBackend`), a process waiting before its first membership write while the role's
         waits in its database past `StatementTimeout` make no progress (a slow standby lets it through, a stalled one
-        holds it): `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; a handover starting only with no
-        pending membership item: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
-        database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (`RolesStepIdempotent`,
+        holds it; at most one stuck backend per live process plus those of processes that died while stuck):
+        `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; a join retry stopping when its own
+        generation's dead key exists: `JoinRetryStopsWhenMarkedDead`; a handover starting only with no pending
+        membership item, the wait counting against the arm: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
+        database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (roles named by cluster and schema, hashed past 52 bytes: `RolesStepIdempotent`,
+        `RoleNamesFitAndRepeatForLongClusterNames`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
-        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
+        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
+        holding `pg_read_all_stats`)); `PublishRefusesStorelessRecords` (`aspire publish` of one storeless node hosting a
+        `[Persist]` type or the Dashboard fails); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one

@@ -736,7 +736,8 @@ in short:
     while none is pending; alert `DaServerMembershipWritePending` above 60 s for 2 min, test
     `MembershipWritePendingAlerted`).
   - **A node declared dead stops**: once it reads itself `Dead`, or, once joined (its join write `Landed`, or shown by the `Confirm` run once
-    its backend ended, its entry's `write_seq`; a join that ended `Unknown` and did not land is retried, not taken as death), reads a document that
+    its backend ended, its entry's `write_seq`; a join that ended `Unknown` and did not land is retried, not taken as death, unless `m|cluster|dead|name|generation`
+    holds its own generation: a newer process of its name marked it dead and it stops; test `JoinRetryStopsWhenMarkedDead`), reads a document that
     no longer holds its own entry (a joined node's entry leaves only at its re-placement, after it was `Dead`, so
     absence is death even once its dead key has expired), or a peer refuses its frames, it freezes every world, fences all its actors and exits with a
     non-zero code; the platform starts a new process, which joins with a new generation. The same holds for a
@@ -857,7 +858,9 @@ in short:
     node without a membership store starts only when `DaServer:Membership:SingleNode = true` says it is alone; any
     other configuration refuses to start, so two storeless replicas never form two clusters running every actor twice; `SingleNode = true` on a node that also has a membership store (or an actor store) refuses to start as well, since a second replica configured the same way would bypass the store's table. A single node's hot-restart handover carries its member entry (name, generation, start time, `restart_until`, `write_seq`) in the stream's header, and the new process seeds its in-memory table from it, at the carried table version, before `Rejoining`, so the check "still `Active`, own generation, own `restart_until`" passes as on a cluster and its own seeded version is never read as a regression.
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource for
-    membership when it declares more than one node and no store. A cluster of more than one process needs the table in
+    membership when it declares more than one node and no store; when that one storeless node hosts a `[Persist]` type
+    or the Dashboard, `aspire publish` fails and names them, since the published node would refuse to start (test
+    `PublishRefusesStorelessRecords`). A cluster of more than one process needs the table in
     a store: the actor store by default, or a separate one (`WithMembershipStore(db)`). Every node, gateways included,
     needs that connection.
   The timer defaults are one table in [draft §11](programming-model.md#定时的默认值).
@@ -1043,7 +1046,9 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   names that class (`Replicated` or `Local`), and on a Dashboard store below `Strict` unless
   `DaServer:Dashboard:AcceptDurability` does; membership has no such opt-in and always needs `Strict` (section 4,
   "Its own client"). Development runs and `TestCluster` are exempt: they start on any class and log a warning
-  (ADR-104).
+  (ADR-104). Development means `IHostEnvironment.IsDevelopment()` (Aspire's run mode sets it; `TestCluster` is exempt
+  by itself); every other environment, a plain `dotnet run` without one included, is production (test
+  `ProductionIsAnyNonDevelopmentEnvironment`).
 - **Unsafe settings**: in every class the provider reports a store configured to corrupt rather than lose writes
   (the PostgreSQL provider: `fsync` or `full_page_writes` off). This check is one cheap read of the settings and runs
   on every new connection and every 10 s, apart from the full self-check, so a reload is seen within 10 s. The
@@ -1267,7 +1272,8 @@ generation, or the Dashboard replica's name, and the connection's backend pid, s
 a `Confirm` never queues behind another's synchronous wait. Rows untouched for a day are deleted
 (`DELETE FROM :schema.daserver_confirm WHERE at < clock_timestamp() - interval '1 day'`, harmless to run twice) on
 each database by whoever writes there: the expiry member for the actor store, the membership coordinator on
-membership's database (its `Confirm`s settle membership writes whose backend ended), the Dashboard's active replica on its own; on one database all three run it:
+membership's database (its `Confirm`s settle membership writes whose backend ended; the delete runs on the membership
+client as that process's one pending membership item, so it never adds a second stuck backend), the Dashboard's active replica on its own; on one database all three run it:
 
 ```sql
 BEGIN;
@@ -1314,7 +1320,7 @@ waiting until the standby answers. The write stays pending meanwhile: the member
 `(pid, backend_start)` every `StatementTimeout` and, once it is gone, runs `Confirm` on that same session (lookup
 first), whose marker commit waits for a standby, and reads the node's entry, looked up by (name, generation), from
 what it shows: the write landed if and only if that entry's `write_seq` is at least the one written, and an absent
-entry means not landed (the absent-entry stop rule then applies; checked on 16: the lookup works as the membership
+entry means not landed (a join is retried; once joined, the absent-entry stop rule applies; checked on 16: the lookup works as the membership
 role, and a read after the backend ends shows the row; test `MembershipWaitNeverTerminated`). That settlement runs on
 the lookup connection, its own wait is never cancelled, and it counts as the process's one pending membership item.
 A settlement `Confirm` that ends `Unknown` keeps that item and is repeated only once a lookup finds the earlier
@@ -1324,14 +1330,16 @@ than one membership backend stuck in `COMMIT` (test `RepeatedConfirmWaitsForEarl
 membership write a process waits, as start progress, while the membership role's waits in this database make no
 progress: it lists the role's other backends waiting in `COMMIT` longer than `StatementTimeout` (`SELECT pid,
 backend_start FROM pg_stat_activity WHERE usename = current_user AND datname = current_database() AND pid <>
-pg_backend_pid() AND wait_event = 'SyncRep' AND now() - state_change > :statement_timeout`; the roles step grants
-`pg_read_all_stats`, through which a role sees every backend on the server, hence the role and database filters) and
-goes on once the list is empty or once any backend of its first list has left it: a slow standby lets waits finish
-and lets the start through, a stalled one holds it. The backends left in `COMMIT` are therefore at most those of
-the processes running when a standby outage began or started within its first `StatementTimeout`, however many pods
-are replaced meanwhile (test `MembershipLeftoverBoundedPerRole`). The membership role is the cluster's own: an
-operator who provisions roles for an external database gives each cluster, and each schema a cluster name repeats
-in, a role of its own, since the limit and the count below are per role. The role's connections, counted across
+pg_backend_pid() AND wait_event = 'SyncRep' AND now() - state_change > :statement_timeout`; a role sees its own
+backends' waits without any grant) and goes on once the list is empty or once any backend of its first list has left
+it: a slow standby lets waits finish and lets the start through, a stalled one holds it. The backends left in
+`COMMIT` are therefore at most one per live process plus those of processes that died while stuck (a lost host's: a
+dead client does not end a synchronous wait), however many pods are replaced meanwhile; a crash-restart of the
+primary in place, an operator's termination or a standby that answers briefly empties the list and starts that
+window again, which is why a membership backend stuck in `COMMIT` is never terminated by hand either: the standby is
+restored instead (test `MembershipLeftoverBoundedPerRole`). The membership role is the cluster's own: the roles step
+names roles by cluster and schema (below), and an operator who provisions roles for an external database does the
+same, since the limit and the count below are per role. The role's connections, counted across
 every database (`SELECT count(*) FROM pg_stat_activity WHERE usename = current_user`, as `CONNECTION LIMIT` counts
 them; a role sees its own backends without `pg_read_all_stats`), and its limit (`SELECT rolconnlimit FROM pg_roles
 WHERE rolname = current_user`, not exported when it is -1, no limit) are read every `SelfCheckInterval` and exported
@@ -1352,8 +1360,13 @@ service's zone-redundant mode that promotes only a replica holding every acknowl
 standby up, writes, claims and membership writes pause in `COMMIT` rather than degrade: lease reads still answer, so
 nothing freezes, but heartbeats skip, deaths and re-placements wait, `DaServerMembershipWritePending` fires on every
 node and `DaServerStoreWritesBehind` on every node with unsaved changes.
-The self-check reads `synchronous_commit`, `synchronous_standby_names` and `pg_stat_replication` (whose `state` and
-`sync_state` PostgreSQL shows only to members of `pg_read_all_stats`, which the roles step grants), and declares
+The self-check reads `synchronous_commit`, `synchronous_standby_names` and the standbys' `state` and `sync_state`
+through `daserver_replication()` (PostgreSQL shows those columns of `pg_stat_replication` only to members of
+`pg_read_all_stats`, which would also show a role every session's query text on the server; the roles step instead
+creates this `SECURITY DEFINER` function, owned by the owner role, the one role granted `pg_read_all_stats`, returning
+only `application_name`, `state` and `sync_state`, with `EXECUTE` granted to the runtime, membership and Dashboard
+roles; checked on 16: each of them sees `streaming`/`quorum` through it and `NULL` directly, and a role without the
+grant is refused), and declares
 `Strict` only when they match and the operator has stated quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`,
 set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
 publishes is a primary and two standbys in three zones under `ANY 1` with quorum-aware failover, so maintenance on one
@@ -1370,17 +1383,18 @@ the `Local` rules, whatever `AcceptDurability` says (section 4's durability clas
 the database's superuser; Aspire's PostgreSQL resource has only `postgres`) that runs before the schema Job (which
 retries until the roles exist) and converges the database on every run: (1) each role created if missing and its
 password set every run (`format('… %I … PASSWORD %L', …)` run by `EXECUTE`, since a `DO` body takes no bind
-parameters): the owner role (`CREATE` on the schema, owns the tables), the runtime role, the membership role
-(`<cluster>_membership`) and, with `AddDaServerDashboard`, the Dashboard's role (`<cluster>_dashboard`); none a
-superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
+parameters): the owner role, the runtime role, the membership role and, with `AddDaServerDashboard`, the Dashboard's role,
+named `<prefix>_owner`, `_runtime`, `_membership` and `_dashboard` where the prefix is `<cluster>_<schema>`, or, when
+that is longer than 52 bytes, its first 40 bytes, `_` and the first 8 hex digits of its `md5` (so every name fits
+PostgreSQL's 63 bytes and re-runs find the same roles; checked on 16 with a 63-byte cluster name, run twice); the
+owner has `CREATE` on the schema and owns the tables; none is a superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
 the owner); (3) `ALTER … OWNER TO <owner>` for DaServer objects created under another owner; (4) a `CONNECTION
 LIMIT` per role, sized from the most nodes the cluster may run (per group the autoscaler's maximum times one plus the
 rollout surge, plus one warm standby process per stateful node) times its pool size, plus per node the backends it can
 leave in `COMMIT` after a socket dies (`2 × WritesInFlight` per world plus `ActivationSlots` for the runtime role, of
-which a node terminates its own on reconnecting; for the membership role one per node process that may be running
-when a standby outage begins or start within its first `StatementTimeout`, its one write's, never terminated, plus its
-lookup connection: a process started later in the outage writes nothing while the role's waits make no progress, so
-replaced pods add none; a lost host's stay until the standby returns),
+which a node terminates its own on reconnecting; for the membership role one per node process that may be running, its one write's, never terminated, plus its
+lookup connection: a process started while the role's waits make no progress writes nothing, so replaced pods add
+none; a lost host's stay until the standby returns),
 failing, with the numbers, when the shares plus the Dashboard's, the owner's and the superuser's reserve exceed
 `max_connections` (or granting `pg_use_reserved_connections` to the membership role when `reserved_connections` is
 configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connection_check_interval = '10s'`,
@@ -1388,8 +1402,8 @@ configured); (5) on every DaServer role (`ALTER ROLE … SET`): `client_connecti
 test `HalfOpenBeforeCommitReleasesLocks`), `tcp_keepalives_idle = 10`, `tcp_keepalives_interval = 2`,
 `tcp_keepalives_count = 5`, `tcp_user_timeout = 30000` (a half-open client's backend not waiting for the standby
 ends within about 30 s), and, only when `current_setting('server_version_num')::int >= 170000`,
-`transaction_timeout = 0`; (6) `GRANT pg_read_all_stats` to the runtime, membership and Dashboard roles (each runs its own self-check), the
-smallest grant that shows them the standbys' `sync_state` (without it a production node or Dashboard never sees
+`transaction_timeout = 0`; (6) `GRANT pg_read_all_stats` to the owner role only and the `daserver_replication()`
+function above for the others (each runs its own self-check; without it a production node or Dashboard never sees
 `Strict`). Nothing the server times ends a synchronous wait. Against an external database the
 operator provisions the roles.
 
@@ -1533,8 +1547,9 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
     standby's process id, all before any bytes) or the arm expires, in which case it never freezes and the rollout
     reports the failure. An instance still on the old build fails on the hash and the node simply retries. Once the
     handshake passes, the node waits until it has no pending membership item (a write or a settlement, section 2's
-    membership), then takes the cluster's one restart permit (its entry's `restart_until`, a versioned write; other
-    members see `NodeRestarting` and pin its slots), and makes no other membership document write while the handover
+    membership; the wait counts against the arm, and at the arm's expiry the node takes no permit, never freezes and
+    the rollout reports it), then takes the cluster's one restart permit (its entry's `restart_until`, a versioned write; other
+    members see `NodeRestarting` and pin its slots), and makes no other membership write (document or heartbeat key) while the handover
     runs (one that aborts resumes in place and clears the permit itself): the standby's `Rejoining` read decides the
     entry from then on, and a parked process never settles anything, since two processes of one (name, generation)
     would otherwise both read one `write_seq` (test `HandoverStartsWithNoPendingMembershipItem`). Roots carry `Restarting` for one last tick, and the worlds
