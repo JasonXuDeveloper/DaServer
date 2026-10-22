@@ -303,8 +303,9 @@ Keep this file current: tick items when done, add items when scope changes.
         `DaServer:Membership:AcceptDurability` and `DaServer:Dashboard:AcceptDurability`, `daserver.store.durability_class`,
         below `Strict` fencing as the only guarantee (no loss detection; the class logged at start), an own-token older
         version in `NotApplied` or `Confirm` fenced, reloaded and counted in `daserver.store.regressions`, any other
-        stored version (another token, the key absent) fenced, and an unsafe setting refused at start and fencing the
-        store when found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+        stored version (another token, the key absent) fenced, and an unsafe setting refused at start and locking the
+        store against writes when found later (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`,
+        `DashboardStoreBelowStrictRefusedWithoutOptIn`,
         `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`, `RolledBackEpochNeverMatchesOtherOwner`,
         `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
@@ -324,9 +325,11 @@ Keep this file current: tick items when done, add items when scope changes.
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
-        in every class `fsync` or `full_page_writes` `off` refused at start and fencing the store when found later
-        (development and `TestCluster` exempt with a warning), `synchronous_commit` `off` or `local` declared `Local`
-        (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
+        in every class `fsync` or `full_page_writes` `off` refused at start and locking the store against writes when
+        found later, read on every new connection as well as in each check, re-checked every 10 s while locked
+        (development and `TestCluster` exempt with a warning: they keep writing and export the class they found),
+        `synchronous_commit` `off` or `local` declared `Local` (`UnsafeDurabilitySettingsDetected`,
+        `UnsafeStoreRefusesWritesKeepsReads`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
@@ -342,7 +345,7 @@ Keep this file current: tick items when done, add items when scope changes.
         generation their view does not list (`ReplacedNodeAbsentFromDocumentStops`); one membership write in
         flight, heartbeats skipped while one is pending, its own store client with a connection kept for reads:
         `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
-        max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
+        max(Unix ms · 2^16 + 16 random bits, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
         snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
         each ordered phase and Outbox hand-off; pushed snapshots never renew it), the freeze past it (no drain, resume on
@@ -633,7 +636,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `DeletingTagCoversSubtree`, `StoppedAskingCountedFromStore`,
       `OlderTokenCannotExtendDeadline`, `ClientCallResendWindowEnforcedByGateway`,
       `OnceSequenceSurvivesCrashAndHandover`, `ClientSessionAckPrunes`, `GatewayRefusesStaleCallId`,
-      `ClientRowsDeletedAfterLastResendDeadline`, `OnceResentUnderSameSequence`, `AppRestartIsNewSession`,
+      `ClientRowsDeletedAfterLastResendDeadline`, `OnceResentUnderSameSequence`, `OnceClientPurchaseResentRunsOnce`,
+      `AppRestartIsNewSession`,
       `AskDeadlineCappedAtMaxAskTimeout`, `AskUntilAnsweredCommitsIntent`, `LinkOutcomeNeverReachesReplied`,
       `ReaskAfterCrashSameSequence`, `RefusalDeliveredOnce`, `AskRowDeletedOnAnswer`,
       `AckFromWrittenStateOnly` (a `Send` after an in-memory answer, then a crash before its write: the restored
@@ -791,7 +795,7 @@ Keep this file current: tick items when done, add items when scope changes.
       firing Prometheus alerts (the outlier rule only naming culprits and the rows that stand out), distributions,
       outliers and the slowest actors computed on the server, logs from Loki (LogQL
       `query_range`, the patterns API, one query per type, cached in the snapshot), the audit in its durable sink
-      (entries in the Dashboard's `IStore`, or an append-only file), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
+      (entries in the Dashboard's `IStore`; on a node without a database, the in-memory store, for the life of the process), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
@@ -1675,6 +1679,18 @@ and cards, a manual clock), fails before its fix, and passes after it.
       `OnError` action (`AMessageThatCannotBeReadIsRefusedWithoutFailingTheActor`).
 - [x] PE10 Nodes starting together raced on `CREATE TABLE IF NOT EXISTS` (23505, the first loads failed): an advisory
       lock serializes the create (`NodesStartingTogetherCreateTheTableOnce`).
+- [x] CQ1 `MpmcQueue` reported full (and empty) while a consumer (a producer) was between taking a position and
+      handing its slot over: shard dispatch refused as `Overloaded`, pools dropping and allocating buffers. A slot one
+      lap behind is full only when every position is still taken, empty only when no producer took it; otherwise the
+      caller spins and yields, as `ConcurrentQueue`'s segments and crossbeam's `ArrayQueue` do
+      (`MpmcQueueNeverFalselyFullOrEmpty`; 5.3M false fulls in 8M operations at 4 threads before, none after).
+- [x] CQ2 A shard stopping and an admit racing it, and a flushed connection's carry loop and a `Wake`, each stored a
+      flag and then read what the other thread stored (store buffering, allowed on x64): a frame stranded in a stopped
+      shard, a connection stalled until closed as a slow consumer. Full fences (`Interlocked.Exchange`) on both stores;
+      stress repros outside the suite: 1,304 and 51 in 8M trials before, none in 32M and 16M after.
+- [x] CQ3 `PendingCallTable`: a sweep that read an expired call's tag and lost the core while the slot went round
+      until a later call wrapped to the same id could fail that call; tag and the whole generation are one 64-bit state
+      exchanged together (an entry stays 32 bytes; not reproduced, found by reading).
 
 ## Open cleanup (review rounds)
 - Audit round 2 (agreed; each change with tests and BenchmarkDotNet where a hot path changes):

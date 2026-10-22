@@ -283,9 +283,9 @@ exported, OpenTelemetry). Names users never write but meet in diagnostics: the S
 | `RestartingNodes` | node singleton | The members in `NodeRestarting`, with their expected pauses; `TryGetPause(connection, out pause)` for gateway systems that tell clients | `daserver.cluster.members` (the `Up` members in the node's view) |
 | `StoreDegraded`, `ActivationSlots`, `PeerHealth` | node singletons | The store is slow or down (no idle deactivation, `Saving` placeholders capped); concurrent epoch claims (jittered back-off); in-flight requests and latency per destination node with an adaptive limit (fail fast with `Busy`) ([draft §6](programming-model.md#6-生命周期), [§11](programming-model.md#11-失败时的结果)) | `daserver.store.degraded`, `daserver.activations.claiming`, `daserver.peer.inflight`, `daserver.peer.limit` |
 | Placeholder | entity | A key not yet active or being saved: the copy of `K.RootPrefab` without `In<K>`, the key, `Loading`, `Arriving` (a key of a handoff-pending slot waiting for its source's answer, section 4), `Saving` or `ActivationFailed(until)`, a bounded `DynamicBuffer<Mail>` (`MaxWaitingMail` per key and `DaServer:WaitingMailBytes` per node, shared out per world); a throw in a persisted actor (reload) turns a root back into one in place, keeping only the key and the `Mail` (values reset to the prefab copy's) | `daserver.activations.failed` |
-| Internal lane | frames no handler can relate to a message | Heartbeats, membership and view exchange, link acks, `Fence(key, epoch)`, `Wake`, `HandoffQuery`, a large message's completion notice and `[Once]`'s bookkeeping (its acknowledgements, `AckQuery` and its answers, window updates): written ahead of queued data so failure detection never waits behind bulk traffic; never `Busy` (section 3's links) | — |
+| Internal lane | frames no handler can relate to a message | Heartbeats, membership and view exchange, link acks, `Fence(key, version)`, `Wake`, `HandoffQuery`, a large message's completion notice and `[Once]`'s bookkeeping (its acknowledgements, `AckQuery` and its answers, window updates): written ahead of queued data so failure detection never waits behind bulk traffic; never `Busy` (section 3's links) | — |
 | Presence notices | mail in the pair's order | `Route`, `Lost`, `JoinConfirmed`, `TakeOver`, `HandedOff`, `Missed` (a gateway dropped or conflated a push for that presence, which then gets `MissedPushes`): user-observable, so they travel in the one ordered stream with the messages and group frames of their pair (section 3), with room reserved so they are never `Busy` or dropped, bounded by the join rate times latency (a few per join); mail to a `Connection` is addressed by its `ConnectionId` (the presence records it), so the gateway routes it to the world by that key's hash like any actor's | `daserver.messages.dropped{reason}`, `daserver.messages.superseded` |
-| `[Latest]` table | runtime value per actor (migrated and handed over, never recorded) | Per (root, sender, message type): the last unhandled mail (replaced in place when it is the sender's last item to the target, else dropped and the new one appended) and the highest sequence handled or queued; a `[Latest]` message carries `(sender stamp, sequence)` compared in that order, the sender being the sending actor (a `[Stateless]` actor runs on every node at once, so its sender is the pair (`ActorId`, node generation): each node's activation is a sender of its own and none drops another's messages; test `StatelessLatestSendersIndependent`) (its stamp: the activation stamp, section 4's activation, which every later activation of the key exceeds, saved or not, without a store write, so a crash cannot reuse a stamp while the counter restarts) or, for a client, its `ClientId` (its stamp: the connection stamp's attempt, a Unix-millisecond start taken as the larger of its own plus one and the one the target reported plus one, section 3's connection stamps; the session nonce is random and orders nothing), the sequence counted per (sender, target, type) within a stamp, and an older pair is dropped, so a sender restarted from a lower counter still wins, so a stale message forwarded by a migration's forwarding marker or still in flight from an old gateway never replaces a newer one; entries go after `DaServer:Mailbox:LatestWindow` (10 s) without an accepted message, so a sender whose stamp went backwards (a membership store below `Strict` rolled back) is held off for at most that window | `daserver.messages.superseded` |
+| `[Latest]` table | runtime value per actor (migrated and handed over, never recorded) | Per (root, sender, message type): the last unhandled mail (replaced in place when it is the sender's last item to the target, else dropped and the new one appended) and the highest sequence handled or queued; a `[Latest]` message carries `(sender stamp, sequence)` compared in that order, the sender being the sending actor (a `[Stateless]` actor runs on every node at once, so its sender is the pair (`ActorId`, node generation): each node's activation is a sender of its own and none drops another's messages; test `StatelessLatestSendersIndependent`) (its stamp: the activation stamp, section 4's activation, which every later activation of the key exceeds, saved or not, without a store write, so a crash cannot reuse a stamp while the counter restarts) or, for a client, its `ClientId` (its stamp: the connection stamp's attempt, a Unix-millisecond start taken as the larger of its own plus one and the one the target reported plus one, section 3's connection stamps; the session nonce is random and orders nothing), the sequence counted per (sender, target, type) within a stamp, and an older pair is dropped, so a sender restarted from a lower counter still wins, and a stale message forwarded by a migration's forwarding marker or still in flight from an old gateway never replaces a newer one; entries go after `DaServer:Mailbox:LatestWindow` (10 s) without an accepted message, so a sender whose stamp went backwards (a membership store below `Strict` rolled back) is held off for at most that window | `daserver.messages.superseded` |
 | Answer reservations | runtime value per world and per link | Bytes reserved for answers at both ends of their path: the receiver, when it admits a request into a mailbox, reserves the reply's size in its own outbound window to the asker's node (released when the reply is sent or the request's deadline passes; past half the window the request is refused `Busy`), and the asker, when it asks, reserves it in its own dispatch queue (released when the answer arrives or at the deadline; past half, the ask is refused locally `Busy`). The size is exact for fixed-size replies (computed by the generator: a `bool` reserves a few bytes) and `DaServer:MaxReplyBytes` (64 KiB, or `[MaxReplySize(n)]`) for variable ones; an answer larger than its reservation travels as ordinary traffic | `daserver.asks.reserved_bytes`, `daserver.replies.oversize` |
 | Membership states | per member, from the membership table | `Joining`, `Active`, `ShuttingDown`, `Dead` (the table's statuses); `NodeJoining`, `NodeLeaving` (placement is changing), `NodeRestarting` (its entry holds `restart_until`: a hot restart, announced once a standby passed the handshake; user systems see the `Restarting` tag and `RestartingNodes`), `Rejoining` (the standby that took over reading its entry before it clears `restart_until`, or finding itself `Dead`) | `daserver.cluster.members` (the `Up` members in the node's view) |
 
@@ -665,8 +665,9 @@ in short:
     a snapshot is always atomic. Heartbeats are keys of their own (`m|cluster|alive|name|generation`, the `Now` of the
     member's latest read, every `DaServer:Membership:IAmAliveInterval`, 30 s), each written only by its member and never touching the
     version, so a versioned write can never overwrite one; they serve diagnostics and the join's skip rule.
-  - **Joining**: a node reads the table and `Scan`s the dead entries of its name, picks its generation as max(Unix ms,
-    the largest generation recorded for its name in either + 1), and in one versioned write adds its entry as `Joining` and marks every older generation of its
+  - **Joining**: a node reads the table and `Scan`s the dead entries of its name, picks its generation as max(Unix ms · 2^16 + 16
+    random bits, the largest generation recorded for its name in either + 1; the random bits keep two processes that
+    lost the recorded history and start in the same millisecond from sharing a generation, and so an owner token), and in one versioned write adds its entry as `Joining` and marks every older generation of its
     name `Dead` (an old process of the same name that is still running reads that and stops). It then checks two-way
     connectivity to every `Active` member (skipping a member whose heartbeat is three intervals older than the
     newest heartbeat, not than the joiner's clock: a crashed node that was never declared dead does not
@@ -832,7 +833,9 @@ in short:
   node's view makes it the owner and the stored placement version is older than its own (or equal with this node as
   owner, a retry), a conditional put of a new header compared on the stored version (absent for a new key): the next
   epoch for the key, this node as owner, the write generation reset to 0, the placement version. The displaced owner
-  is the one the `Get` showed and gets `Fence(key, epoch)`; a taking claim that is `NotApplied` (another claim landed
+  is the one the `Get` showed and gets `Fence(key, version)` carrying the version the `Get` showed; the receiver fences
+  only an activation of the key whose own version is that one and ignores the frame otherwise, so a `Fence` delayed on
+  a link never destroys a later activation of the same key on that node; a taking claim that is `NotApplied` (another claim landed
   in between) `Get`s the key again and is decided anew; one that ends `Unknown` or `AlreadyLanded` acts only
   once `Confirm` shows its version, and still notifies the owner it displaced (test `TimedOutClaimConfirmedByRerun`).
   Then `LoadEntitiesInto(record, into, markWritten: false)` with the placeholder as the root; `In<K>` added;
@@ -1005,20 +1008,25 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   `DaServer:Dashboard:AcceptDurability` does. Development runs and `TestCluster` are exempt: they start on any class
   and log a warning (ADR-104).
 - **Unsafe settings**: in every class the self-check refuses a store configured to corrupt rather than lose writes
-  (the PostgreSQL provider: `fsync` or `full_page_writes` off). Found at start, the node refuses to start; found by a
-  later check (the setting reloaded), the store is fenced: the effective class drops to `Unsafe`, below `Local`,
-  every write is refused as `StoreLevel` until a check passes again, and `DaServerStoreDurabilityDropped` fires.
-  Development runs and `TestCluster` are exempt with a warning, so test containers may run without `fsync` (test
-  `UnsafeDurabilitySettingsDetected`).
+  (the PostgreSQL provider: `fsync` or `full_page_writes` off, read on every new connection as well as in each check,
+  so a reload is seen at the next connection or check, whichever comes first; writes acknowledged before that rest on
+  the setting). Found at start, the node refuses to start; found later, the store is locked against writes: the
+  effective class drops to `Unsafe`, below `Local`; data writes, claims, `Confirm` and membership writes (joins, deaths,
+  heartbeat keys, the Dashboard's actions) are refused as `StoreLevel`, so held output stays held, unloaded keys do not
+  activate and membership changes wait, while reads, membership lease reads and scans go on; the check reruns every
+  10 s until it passes, and `DaServerStoreDurabilityDropped` fires. Development runs and `TestCluster` are exempt with
+  a warning: they keep writing and export the class they found, so test containers may run without `fsync` (tests
+  `UnsafeDurabilitySettingsDetected`, `UnsafeStoreRefusesWritesKeepsReads`).
 - **What each class guarantees** (R13). `Strict`: what a `Commit` item sent leaves only once its write is durable,
   so released output survives every failover; an `Unknown` write releases nothing until `Confirm`. Below `Strict`
   the guarantee is fencing only: two owners' writes never mix (the version is the fencing token), whatever the store
   loses. Output leaves once the write reached the provider's wait, and a failover or crash may lose recent writes,
   index entries (a due entry, so a reminder) and claims whose effects already left; `[Once]` stays exactly-once and
   `AskUntilAnswered` never loses an intent *except across such a loss*, so value flows keep business reconciliation
-  (ADR-097). The framework neither detects nor reports such a loss: the node logs at start which class it runs and
-  that it accepted this. A root that writes again and finds its own token at an older generation is fenced and
-  counted (section 2's Tick-end write), which reports what it meets and no more.
+  (ADR-097). The framework promises no detection of such a loss and reports only what it meets: a root that writes
+  again and finds its own token at an older generation is fenced and counted (section 2's Tick-end write), and a
+  membership version below one the node held is adopted and logged (section 2's membership); the node logs at start
+  which class it runs and that it accepted this.
 
 ### The framework over the contract
 
@@ -1279,7 +1287,7 @@ publishes is a primary and two standbys in three zones under `ANY 1` with quorum
 standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); the local single-node
 database of `aspire run` is `Local` and exempt. In every class the check also reads `fsync` and `full_page_writes`:
 either `off` is unsafe (a crash can corrupt the database rather than lose recent commits), refused at start and
-fencing the store when found later, whatever `AcceptDurability` says (section 4's durability classes);
+locking the store against writes when found later, whatever `AcceptDurability` says (section 4's durability classes);
 `synchronous_commit` `off` or `local` (a crash in place, or a failover, loses the last acknowledged commits) declares
 `Local`, and a synchronous standby without quorum-aware failover (or `remote_write`) declares `Replicated` (test
 `UnsafeDurabilitySettingsDetected`).
@@ -1354,8 +1362,8 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
 | 1. Contract | Every primitive's semantics: conditions on absent, equal and other versions, `AlreadyLanded`, dependents all or nothing however large, ordered scans and paging, `Now` never before a landed write it shows, `MaxValueBytes + 1` as `RowDeterministic` while the rest of the batch lands; and the framework's protocols run over the provider: claims, fencing, tombstones, epochs continued through deletion, seeds of recreated actors, due and ask indexes never missing a key, expiry predicates, membership |
 | 2. Concurrency | Linearizability per key: random claim, write and delete histories from racing clients checked against a compare-and-set register model (a Porcupine-style checker shipped in the kit); exactly one taker per placement version |
 | 3. Fault injection | The `Unknown` obligation through the proxy: a connection dropped after the store's commit point was forwarded (PostgreSQL: its `COMMIT`; MongoDB: `commitTransaction` or the single write; Redis: the function call) is never `StoreLevel` or `NotApplied`, only `Landed` or `Unknown`, and `Confirm` then agrees with the store; dropped before it is a safe retry, and may answer `StoreLevel` (a PostgreSQL data batch whose deadline passed before `COMMIT`); a commit point's reply delayed past a deadline is `Unknown`; a half-open connection is found within the provider's stated bound; a stalled durability wait pauses writes while membership reads still answer; plus the store-side faults a provider supplies (a cancelled synchronous wait on PostgreSQL, a step-down on MongoDB, `CLIENT PAUSE` on Redis) |
-| 4. Failover, per class | Load with recorded acknowledgements, the primary killed or partitioned at random points, a promotion: `Strict` loses no `Landed` or confirmed write over many runs; `Replicated` and `Local` may lose writes, but no write under an older token lands after a newer claim and no two owners' writes mix. The PostgreSQL commit tests (`UnknownReleasesOnlyAfterConfirm` with the primary up and the standby down, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `TimedOutClaimConfirmedByRerun`, `MembershipVersionRegressionAfterFailoverAdopted`) are kit tests here |
-| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) refuses to start in every class and, found later, fences the store |
+| 4. Failover, per class | Load with recorded acknowledgements, the primary killed or partitioned at random points, a promotion: `Strict` loses no `Landed` or confirmed write over many runs; `Replicated` and `Local` may lose writes, but no write under an older token lands after a newer claim the store still holds, and no two owners' writes mix. The PostgreSQL commit tests (`UnknownReleasesOnlyAfterConfirm` with the primary up and the standby down, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `TimedOutClaimConfirmedByRerun`, `MembershipVersionRegressionAfterFailoverAdopted`) are kit tests here |
+| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) refuses to start in every class and, found later, locks the store against writes |
 | Profile | Not pass or fail: BenchmarkDotNet batched writes and claims per second at 1 and 5 ms of injected latency, recorded per provider |
 
 ## 5. Migration, upgrades, hot restart
@@ -1372,7 +1380,12 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
   overflow; a root whose `SaveEntitiesWith` throws drops its held output at once and falls back to a forced
   deactivation (section 4).
   Arrivals load with `markWritten: true`, so `[Changed<T>]` systems treat them as written (re-subscribe, re-cell,
-  first checkpoint). A forwarding marker (key → target, kept for a while) forwards all mail for the key. Across shards it is bytes too (`MoveEntities` needs
+  first checkpoint). A forwarding marker (key → target) forwards all mail for the key, in order; while it is present the node does not
+  activate the key, and when its target has left the cluster it forwards by the current placement instead (test
+  `ForwardingMarkerToLeftNodeFallsBack`). It is dropped once the node's own view and every live member's view, which heartbeats
+  carry, are at or above the move's placement version; mail that still arrives after that is forwarded by the current
+  placement like any mail for a key the node does not own, so dropping the marker loses nothing (only its order with
+  mail sent later is no longer kept). Across shards it is bytes too (`MoveEntities` needs
   one thread).
 - **Time across processes** is remaining time only; each process runs on its own monotonic clock.
 - **`wire.manifest`**: one section per project; `Game.Server`'s holds actor types, hosting server types, tick rates,

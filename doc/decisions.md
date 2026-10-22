@@ -1096,7 +1096,8 @@ Replaced by ADR-081.
   - **Claim:** a `Get` of the record key, then a put of the new header compared on the stored version (absent for a
     new key): the next epoch for the key (the stored or the tombstone's + 1), the write generation reset, the owner
     taken only with a strictly newer placement version (or the same version and owner, a retry); the displaced owner,
-    known from the `Get`, gets `Fence(key, epoch)` at once. A migration's arrival claims the same way, compared on the
+    known from the `Get`, gets `Fence(key, version)` at once with the version the `Get` showed, and fences only the
+    activation whose version is that one (a delayed `Fence` never destroys a later activation of the key). A migration's arrival claims the same way, compared on the
     version the source's last write left. A claim acts only once it has `Landed`, or `Confirm` shows its version
     (ADR-101).
   - **Writes:** each world writes the roots due at a tick end as one batch of guarded writes, one per root (the record
@@ -1590,7 +1591,7 @@ Replaced by ADR-081.
       compares and swaps the version, so changes are totally ordered and every node that read version v derives the
       same members, coordinator and slot table. The store is the arbiter, so there is no quorum, ballot or configured
       cluster size, and any number of members may fail;
-    - a node joins by inserting itself `Joining` with generation max(Unix ms, recorded max + 1), marking older
+    - a node joins by inserting itself `Joining` with generation max(Unix ms · 2^16 + 16 random bits, recorded max + 1), marking older
       generations of its name `Dead` in the same write, checking two-way connectivity to every `Active` member
       (skipping members whose heartbeat is older than the newest one by more than the staleness bound,
       so the store's clock alone decides; a member that skipped one casts no suspicion vote until it has probed every
@@ -1651,7 +1652,7 @@ Replaced by ADR-081.
       placement change, a membership change or a slot-table move (ADR-079): the table version of that change, so
       every node derives the same versions; frames carry the highest seen; a
       migration's arrival writes it too), and a claim that displaces a live owner sends it
-      `Fence(key, epoch)`, so two activations never overlap until the loser's next write; claims are idempotent, so
+      `Fence(key, version)` (the version it displaced; only that activation is fenced), so two activations never overlap until the loser's next write; claims are idempotent, so
       a retried statement or a restart after a migration's arrival does not fence the claimant itself;
     - a move hands off before the target claims (ADR-072's "mail first", kept): mail for a key of a slot the node
       just received parks on an `Arriving` placeholder while the node asks the source (`HandoffQuery`, carrying the
@@ -1666,8 +1667,9 @@ Replaced by ADR-081.
       and a retry that finds its own version counts as written once `Confirm` shows it (ADR-102); the epoch rises with
       every claim of a key and continues through its tombstone (ADR-105), and the owner in the version keeps a late
       write or an old `Fence` from matching another owner's even when a store rollback hands an epoch out twice;
-    - generations are max(Unix ms, recorded max + 1), so a cold restart of the whole cluster never reuses a
-      generation, and the first writer creates the membership document, so parallel starts never form two clusters.
+    - generations are max(Unix ms · 2^16 + 16 random bits, recorded max + 1), so a cold restart of the whole cluster
+      never reuses a generation, and two processes that lost the recorded history and start in the same millisecond
+      do not share one (nor an owner token), and the first writer creates the membership document, so parallel starts never form two clusters.
   - **Replies, presences and retries are data with stated guarantees** (the table "每条路径保证什么" in the draft's §11):
     - Everything one sender sends to one target arrives in send order, answers included (ADR-096). Ordinary progress is
       written in batches; a valuable change calls `root.Commit()`, which holds the item's output until the tick-end
@@ -3276,8 +3278,8 @@ Replaced by ADR-098.
     members of `pg_read_all_stats`, so the roles step grants it to the runtime, membership and Dashboard roles (without
     it a production node or Dashboard never sees `Strict`). The local single-node database is `Local` and exempt.
     In every class the self-check refuses `fsync` or `full_page_writes` `off` (a crash may corrupt the database
-    rather than lose recent commits): at start the node refuses to start, and found later the store is fenced
-    (ADR-104); it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
+    rather than lose recent commits), reading both on every new connection as well as in each check: at start the
+    node refuses to start, and found later the store is locked against writes (ADR-104); it declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3462,13 +3464,15 @@ Replaced by ADR-098.
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
-  framework neither detects nor reports the loss; the node logs at start the class it runs and that it accepted it.
+  framework promises no detection of the loss and reports only what it meets (below, and a membership version below
+  one the node held, ADR-103); the node logs at start the class it runs and that it accepted it.
   A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
   (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
   what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or
-  `full_page_writes` off) is unsafe in every class: refused at start; found by a later check, the store is fenced
-  (effective class `Unsafe`, below `Local`, every write refused until a check passes, `DaServerStoreDurabilityDropped`);
-  development and `TestCluster` are exempt with a warning.
+  `full_page_writes` off) is unsafe in every class: refused at start; found later, the store is locked against writes
+  (effective class `Unsafe`, below `Local`: data writes, claims, `Confirm` and membership writes refused, held output
+  kept, reads and lease reads going on, re-checked every 10 s until it passes, `DaServerStoreDurabilityDropped`);
+  development and `TestCluster` are exempt with a warning: they keep writing and export the class they found.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
   a replacement for stating it); a rollback audit on every failover term change (above: no portable term, crash
@@ -3476,7 +3480,7 @@ Replaced by ADR-098.
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; below
   `Strict` lost writes are invisible to the framework, which the documentation and the start-up log say. Tests
   `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
-  `UnsafeDurabilitySettingsDetected`.
+  `UnsafeDurabilitySettingsDetected`, `UnsafeStoreRefusesWritesKeepsReads`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
