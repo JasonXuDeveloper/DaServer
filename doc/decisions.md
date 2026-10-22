@@ -2380,24 +2380,22 @@ Replaced by ADR-098.
       operator's identical request is the same action. A finished action (Done or Failed) no longer dedupes.
     - **One at a time.** Each server type has one action at a time: a rollback, a hot restart, a node restart or a
       rollout. Another action waits, and its button names the running one. The confirmation says when another node
-      of the type is not running. Every action on a type takes the type's lock, a node's restart included (a Resize does not: its row has no type, a unique index on (node, incarnation,
-      attempt) admits its automatic first attempt and one retry once across replicas, an operator's Resize has no
+      of the type is not running. Every action on a type takes the type's lock, a node's restart included (a Resize does not: it has no type, a key per (node, incarnation,
+      attempt), put only when absent, admits its automatic first attempt and one retry once across replicas, an operator's Resize has no
       attempt number and is deduplicated by its idempotency key, it runs in a per-node concurrency group and
       sets requests by role, so it is idempotent, never waits behind a rollback, and a Stalled one holds only its node); an action
-      on the whole cluster (a config push) takes the sentinel type `*cluster`, since `type` is never NULL (a unique
-      index never conflicts on NULL). The two exclude each other: a config push is refused while any type holds a lock (naming
+      on the whole cluster (a config push) takes the sentinel type `*cluster`. The two exclude each other: a config push is refused while any type holds a lock (naming
       the type, its action and, when Stalled, Mark failed), and a type's action is refused while `*cluster` is held,
       since a standby that read the old table could take over a node after a push (the handover also carries the table
-      version). Different keys never meet in the unique index and READ COMMITTED hides uncommitted rows, so every
-      lock-taking insert first takes one serialising `pg_advisory_xact_lock` in its transaction, then checks and inserts. The lock is `daserver_actions`: a unique partial
-      index on `(type)` over every state that has not finished (Requested, Accepted, Running, Unknown, Stalled), and a
-      lease (`claimed_by`, `lease_until`) of three cadences, renewed on a timer of its own (never in the poll loop, so
-      a slow refresh cannot let it lapse), every renewal and state write conditioned on `claimed_by`; a renewal that updates no row
-      (another replica holds it) stops the owner following the run, and one that fails with a store error writes
+      version). The lock is a key per type in the Dashboard's store, put only when absent and held until its action is
+      Done or Failed; after taking its key a type's action reads `*cluster`'s and a config push scans every type's, and
+      one that finds the other gives its key back and is refused, so two that race may both be refused but never both
+      run. The action's key carries a lease of three cadences on the store's clock, renewed on a timer of its own
+      (never in the poll loop, so a slow refresh cannot let it lapse); every renewal and state write is a put compared
+      on the version the holder read; a renewal not applied because another replica holds it stops the owner following the run, and one that fails with a store error writes
       nothing and retries until its own lease has run out.
-    - **Reconcile.** A replica claims a lease only once it expired a whole lease ago, by compare-and-set on the
-      store's clock (`UPDATE daserver_actions SET claimed_by = $me, lease_until = now() + $lease WHERE action_id = $1
-      AND lease_until < now() - $lease`), so a briefly late renewal is never taken over and one replica wins; after a
+    - **Reconcile.** A replica claims a lease only once it expired a whole lease ago, by a put compared on the
+      version it read, judged on the store's clock, so a briefly late renewal is never taken over and one replica wins; after a
       store outage the replica that was following the run usually renews first, a race either outcome of which is
       correct. It then looks the run up by the
       action id. A run not found yet (dispatch creates runs asynchronously, late during a pipeline incident) is looked
@@ -2431,15 +2429,19 @@ Replaced by ADR-098.
       (`workflow_dispatch`) is not retried after a timeout; the pipeline is first asked for a run carrying the action
       id.
     - **Mark failed** is an action of its own: act scope, a reason, audited, refused while the store is down (the lock
-      stays until it answers). In one transaction it sets the action Failed, conditioned on the state the operator saw
-      (`state = $seen`), so an action that moved on meanwhile is not failed while healthy, and writes its
-      own row already Done (for a Resize a `kind = resize` row for that node with no attempt number), so it never
-      needs the lock it releases. It does not cancel the pipeline's run.
+      stays until it answers). In one guarded write it sets the action Failed, conditioned on the state the operator
+      saw, so an action that moved on meanwhile is not failed while healthy, and writes its own record already Done
+      under the action's key, so it never needs the lock it releases. It does not cancel the pipeline's run.
     - **Reasons.** An action on a whole type or on the cluster asks for a reason.
     - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
-      the page shows. The sink is durable: the store's `daserver_audit` table, owned by the owner role and
-      insert-only for the Dashboard's role, or an append-only file without a store. Retention is the operator's
-      setting (`DaServer:Dashboard:AuditRetention`). The same lines also go to the logs.
+      the page shows. The intent and the action's key land before the call, and an `Unknown` write is settled by the
+      store's `Confirm`, never by calling. The sink is durable as the Dashboard's store's class is: entries in that
+      store (`IStore`, by default on membership's database; ADR-102), each written once and never rewritten, or an
+      append-only file without a store. Append-only is the framework's rule, not a database grant: whoever holds the
+      store's credentials can rewrite the entries, and an operator who needs tamper evidence exports the audit to a
+      sink of their own, outside the framework. Retention is the operator's setting
+      (`DaServer:Dashboard:AuditRetention`), expired entries deleted compared on their version. The same lines also go
+      to the logs.
     - **No store, no action.** The intent, the key and the lock live in the store. When it cannot be reached, the
       Dashboard sends nothing: the confirmation says so and gives the deploy pipeline's command for the same action,
       whose run log is the audit for it (a config push and Mark failed have no pipeline command: they wait for the
@@ -2554,8 +2556,9 @@ Replaced by ADR-098.
   builds).
 - Consequences: roadmap W7e builds it; the samples' AppHosts add the Collector, Prometheus, Loki, Tempo and Grafana
   for published runs through the publisher hooks; doc/operations.md describes the telemetry path; framework log calls
-  use `LoggerMessage` with those attributes, off the hot paths; the roles step creates `daserver_audit`,
-  `daserver_actions` and `daserver_dataprotection` and the Dashboard's login role; deployment adds the
+  use `LoggerMessage` with those attributes, off the hot paths; the Dashboard keeps its actions, locks, audit and
+  Data Protection key ring as keys in its own store (`IStore`), which the PostgreSQL provider puts in a table of its
+  own with the Dashboard's login role; deployment adds the
   `{cluster}-admin` Secret.
 
 ## ADR-094 Kubernetes objects and controllers: which object each part uses, who owns which field
@@ -3352,7 +3355,10 @@ Replaced by ADR-098.
     (a record's version is its fencing token and write generation, ADR-105), tombstones, the due index and the ask
     index as keys (hints that never miss a key: written ahead of their record, stale ones deleted compared on their
     versions), `[Once]` and ask rows as keys under their root, deletion, expiry (one paged walk, every deletion compared
-    on the version read), the ask census, membership (ADR-103) and the rollback audit (ADR-104).
+    on the version read), the ask census, membership (ADR-103), the rollback audit (ADR-104) and the Dashboard's
+    actions, type locks, idempotency keys, audit and key ring (ADR-093: puts only when absent and puts compared on the
+    version read; its own `IStore` registration, by default on membership's database), so no part of DaServer needs a
+    particular database.
   - **Atomicity is per actor**: one guarded write per root (its record and its rows), nothing across roots; a batch
     is group commit, not a transaction (ADR-105 removes the writes that spanned actors).
   - **Providers**: PostgreSQL first, and through self-check variants its wire family (Aurora, AlloyDB, Neon, PolarDB for

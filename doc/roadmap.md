@@ -777,7 +777,7 @@ Keep this file current: tick items when done, add items when scope changes.
       firing Prometheus alerts (the outlier rule only naming culprits and the rows that stand out), distributions,
       outliers and the slowest actors computed on the server, logs from Loki (LogQL
       `query_range`, the patterns API, one query per type, cached in the snapshot), the audit in its durable sink
-      (`daserver_audit`, or an append-only file), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
+      (entries in the Dashboard's `IStore`, or an append-only file), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
@@ -820,7 +820,8 @@ Keep this file current: tick items when done, add items when scope changes.
       `OneActionPerTypeAtATime`, `RepeatedActionIsIdempotent` (a double press, a retry, a second operator; the key excludes the operator; a
       finished action no longer dedupes),
       `DeployWebhookCarriesExpectedBuild`, `ActionOutlivesBrowser`, `WebhookTimeoutIsUnknownNotRetried`,
-      `TypeWideActionNeedsReason`, `AuditWritesIntentAndOutcome` (same action id, durable sink, insert-only role),
+      `TypeWideActionNeedsReason`, `AuditWritesIntentAndOutcome` (same action id, durable sink, entries never rewritten, an `Unknown` write confirmed before the call),
+      `ClusterAndTypeLocksNeverBothHeld` (a type's action and a config push racing: both may be refused, never both run),
       `DashboardHoldsNoSigningSecret` (only `{cluster}-admin` mounted), `ActionsNeedAntiforgeryToken`,
       `DataRenderedAsTextUnderCsp` (a log line holding markup shows as text), `MixedBuildsCountedAndComparedPerBuild`,
       `OutlierRuleTwoSidedWithNoRequests`, `TypeP99FromMergedBuckets`, `LokiQueriesOnePerTypeAndCached`,

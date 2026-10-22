@@ -629,13 +629,23 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     return { id: p.id, type: p.kind, node: n.n, p99: Math.round(t.usual * 10) / 10, rps: (h % 90 + 4) + '/s', mailbox: (h % 5) + ' of 2,000', saved: h % 40 + 1, found: true,
       comps: [p.kind + ' { Id: ' + p.key + ' }'], logs: [['17:5' + (h % 9) + ':' + (10 + h % 49), 'info', 'answered ' + (h % 300 + 20) + ' requests in the last minute']] };
   }
-  // The audit, read from its durable sink (the store's daserver_audit table, or the append-only file): every action
+  // The audit, read from its durable sink (entries in the Dashboard's store, or the append-only file): every action
   // twice, its intent before the call and its outcome after, linked by the action id. [time, who, action, target, outcome, id]
   var AUDIT = [
     [Date.UTC(2026, 9, 20, 17, 58, 4) / 1000, 'On-call operator', 'Restart', 'game-87, incarnation 4', 'Done', '7f2c'],
     [Date.UTC(2026, 9, 20, 17, 20, 11) / 1000, 'On-call operator', 'Upload config table', 'SkillTable version 15', 'Done', '7f2b'],
     [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
   ];
+  // The store's provider and its effective durability class for records and for membership: Strict, or a lower class
+  // the deployment accepted (?durability=replicated shows one), said in words since an operator may not know the names
+  var DUR_LOW = /[?&]durability=replicated/.test(location.search);
+  // the line under the store's running head: the class, then the errors while there are none; a lower class takes
+  // the whole line, since what it may lose matters more than a count of nothing
+  // (the store's own screen names the provider in its eyebrow already)
+  function durText(own) {
+    var t = DUR_LOW ? 'records Replicated by choice: a failover may lose the last writes' : 'Strict for records and membership; no errors in the last hour';
+    return own ? t.charAt(0).toUpperCase() + t.slice(1) : 'PostgreSQL, ' + t;
+  }
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
     byType: [['Map', 'MapServer', '9,410', '9 s'], ['Player', 'PlayerServer', '6,102', '7 s'], ['Guild', 'GuildServer', '1,880', '5 s'], ['Mailbox', 'MailServer', '812', '4 s']] };
   // clients per gateway; gate-23 joined half an hour ago and is filling up
@@ -689,9 +699,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
         eb: function () { return group(ALLNODES) + ' members in ' + TYPES.length + ' server types; every view agrees'; }, h1: 'Server types',
         body: function () { return mdBody(me, typesMaster, function (l) { return typeDet(t, l); }, NROWS + 1); }, det: function () { return fitted('det' + t.id, function (l) { return typeDet(t, l, true); }, NROWS + 1); }, deb: function () { return group(t.n) + ' nodes, ' + count(t.count) + ' actors, ' + t.rps + ' requests/s'; } });
     });
-    if (!c) add(1, 'plat', 'Platform', 'plat', 'plat', 'Platform', { kw: 'store clients connections postgresql gateways', eb: function () { return 'What every node writes to, and what every client connects through'; }, h1: 'Platform', body: function () { return fitted('plat', platform, 3); } });
+    if (!c) add(1, 'plat', 'Platform', 'plat', 'plat', 'Platform', { kw: 'store clients connections postgresql durability gateways', eb: function () { return 'What every node writes to, and what every client connects through'; }, h1: 'Platform', body: function () { return fitted('plat', platform, 3); } });
     else {
-      add(1, 'store', 'The actor store', 'store', 'store', 'The actor store', { kw: 'platform postgresql', eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: function () { return fitted('store', store, 3); } });
+      add(1, 'store', 'The actor store', 'store', 'store', 'The actor store', { kw: 'platform postgresql durability strict replicated', eb: function () { return 'PostgreSQL, written by every node'; }, h1: 'The actor store', body: function () { return fitted('store', store, 3); } });
       add(1, 'clients', 'Client connections', 'clients', 'clients', 'Client connections', { kw: 'platform gateways', eb: function () { return 'Held by ' + GW.n + ' GatewayServer nodes'; }, h1: 'Client connections', body: function () { return fitted('clients', clients, 3); } });
     }
     CHANGES.forEach(function (ch, ci) {
@@ -950,7 +960,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   // Platform: the two things every node shares, side by side under their running heads
   function platform(l) {
-    return '<div class="ln half1 det">' + M('b-ph0', 'The actor store', 'h2', 'h2') + '<p class="sc rhs">PostgreSQL, written by every node; no errors in the last hour</p>' + storeUnits(l, 3) + '</div>' +
+    return '<div class="ln half1 det">' + M('b-ph0', 'The actor store', 'h2', 'h2') + '<p class="sc rhs">' + durText() + '</p>' + storeUnits(l, 3) + '</div>' +
       '<div class="ln half2 det">' + M('b-ph1', 'Client connections', 'h2', 'h2') + '<p class="sc rhs">Held by ' + GW.n + ' gateways; no handshakes refused</p>' + clientUnits(l, 3) + '</div>';
   }
   function storeFigs(k) {
@@ -962,7 +972,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
       STORE.byType.slice(0, Math.max(1, l + 1)).map(function (r, k) { return M('b-u' + k + 'a', r[0], 'td') + M('b-u' + k + 'b', r[1], 'td st') + M('b-u' + k + 'c', r[2], 'td r num') + M('b-u' + k + 'd', r[3], 'td r num'); }).join('') + '</div>' +
       '<div class="uf"><p class="readout">The types with the most actors waiting to be written</p>' + hist('Grafana') + '</div>';
   }
-  function store(l) { return '<div class="ln full det">' + storeUnits(l, 4) + '</div>'; }
+  function store(l) { return '<div class="ln full det"><p class="sc rhs">' + durText(true) + '</p>' + storeUnits(l, 4) + '</div>'; }
   // the gateways more than a tenth away from the average, or not running; l rows at most
   function gwRows(l) {
     var avg = Math.round(CLIENTS.total / GW.n);

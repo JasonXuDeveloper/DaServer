@@ -928,9 +928,10 @@ owners never write the same version, even when a store failover rolls an epoch b
 | `d\|type\|slot\|bucket\|key` | The due index: a hint that the key may be due from its bucket on (`DaServer:Store:DueBucket`, 1 minute) |
 | `a\|type\|key` | The ask index: a hint that the root owns ask rows, read by the ask census |
 | `m\|cluster`, `m\|cluster\|alive\|name\|generation` | The membership document and the heartbeats, in membership's store (section 4's membership) |
+| `x\|cluster\|…` | The Dashboard's actions, type locks, resize attempts, idempotency keys, audit and Data Protection key ring, in the Dashboard's store (below) |
 
 A root's keys share its record key's prefix, so a provider can keep them in one partition, hash slot or transaction;
-only the two indexes and membership live outside a root.
+only the two indexes, membership and the Dashboard's keys live outside a root.
 
 **Primitives.**
 
@@ -1019,6 +1020,42 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   present (section 2's `OnceAsks`; the upgrade check asks it before removing a state type); entries whose header
   shows no ask row are deleted.
 
+- **The Dashboard's keys** (`AddDaServerDashboard`), in the Dashboard's store: an `IStore` registration of its own,
+  by default on membership's database (in the PostgreSQL provider a table and role of its own, below), held to
+  membership's class rule. The Dashboard keeps nothing elsewhere (ADR-093):
+  - **Actions**: `x|cluster|action|id` holds the kind, the type or the node, incarnation and attempt, the idempotency
+    key, the state, the lease holder, the lease's end on the store's `Now`, and the run id. Every state write and
+    lease renewal is a put compared on the version it read, made only from a state that is not final and only by
+    the lease holder; a lease is taken over only once it ended a whole lease ago by the `Now` of the read.
+  - **Type locks**: `x|cluster|lock|type` (`*cluster` for an action on the whole cluster) holds the action id, put
+    only when absent. A type's action then `Get`s `lock|*cluster`, and a cluster action `Scan`s `lock|`; one that
+    finds the other deletes its own lock, compared on its version, and is refused. Of two that race, both may be
+    refused, never both run, since a linearizable read sees every lock put that landed before it (test
+    `ClusterAndTypeLocksNeverBothHeld`). A lock is released by a delete compared on its version once its action is
+    Done or Failed; a lock whose action is already final is free, and whoever finds it deletes it the same way.
+  - **Resize attempts**: `x|cluster|resize|node|incarnation|attempt`, put only when absent, so the automatic resize
+    runs at most twice per node incarnation across replicas.
+  - **Idempotency**: `x|cluster|idem|hash` holds the action id and the request's `Now`, put only when absent. Found
+    unfinished and under ten minutes old, the request is that action; otherwise it is replaced by a put compared on
+    its version.
+  - **Mark failed**: one guarded write, the target action's key put to Failed as head, compared on the version just
+    read and refused when that read's state is not the one the operator saw. Its dependent, the marking's own record
+    already Done under the action's key, is `…|action|id|failed`, so marking never needs the lock it releases.
+  - **Audit**: `x|cluster|audit|at|action id|phase|n`, with `at` the store's `Now` big-endian, so a `Scan` reads it in
+    time order. Each key is put only when absent and never updated: the intent (operator, action, target, and the
+    reason, which a type-wide or cluster action requires) before the action's key is written, then each outcome.
+    Retention (`DaServer:Dashboard:AuditRetention`; unset, kept forever) is a daily `Scan` of the keys older than
+    it, each deleted compared on its version. The audit is as durable as the store's class. Append-only is a
+    framework rule, not a database grant: only the Dashboard writes these keys and it never rewrites one, but
+    whoever holds the store's credentials can. An operator who needs tamper evidence exports the audit (its lines
+    also go to the logs) to a sink of their own, outside the framework.
+  - **Data Protection**: the key ring, at `x|cluster|dp|name`.
+  - **Commit rule**: the call goes out only once the intent and the action's key have `Landed`. An `Unknown` or
+    `AlreadyLanded` is settled by a `Confirm` of those keys before anything is called, never by calling.
+  - **Fail closed**: a Dashboard whose store does not answer acts on nothing and answers 503 on
+    `GET /admin/actions/{id}`. The rollout step retries that read for five minutes, then refuses, and runs on any
+    unfinished state, Stalled included ([dashboard design](../dashboard/design.md#actions)).
+
 ### The PostgreSQL provider
 
 `DaServer.Persistence.PostgreSql`, the reference provider, on Npgsql with no ORM, for **PostgreSQL 16 or later**
@@ -1030,8 +1067,8 @@ YugabyteDB, each to verify against the kit before it is named supported (roadmap
 **The schema** (created by the schema Job as the owner role, in the schema `:schema`, default `public`; DDL takes no
 bind parameters, so `:schema` and the role names are formatted in as quoted identifiers, `format('%I')`; every
 object is qualified with `:schema`, so no role depends on its `search_path`; every statement is re-runnable, since
-the Job runs on every release). Records and membership live in two tables of the same shape, so each data source's
-role is granted only its own; there are no secondary indexes, since the due and ask indexes are keys:
+the Job runs on every release). Records, membership and the Dashboard's keys live in tables of the same shape, so
+each data source's role is granted only its own (the Dashboard's table and grants only with `AddDaServerDashboard`); there are no secondary indexes, since the due and ask indexes are keys:
 
 ```sql
 CREATE TABLE IF NOT EXISTS :schema.daserver_kv (
@@ -1039,11 +1076,13 @@ CREATE TABLE IF NOT EXISTS :schema.daserver_kv (
   version bytea NOT NULL,                       -- the writer's version
   value   bytea NOT NULL);                      -- opaque to the store; TOASTed when large
 CREATE TABLE IF NOT EXISTS :schema.daserver_membership_kv (LIKE :schema.daserver_kv INCLUDING ALL);
+CREATE TABLE IF NOT EXISTS :schema.daserver_dashboard_kv (LIKE :schema.daserver_kv INCLUDING ALL);  -- with a Dashboard
 CREATE TABLE IF NOT EXISTS :schema.daserver_confirm (client text PRIMARY KEY, n bigint NOT NULL);  -- Confirm's marker
-GRANT USAGE ON SCHEMA :schema TO :runtime_role, :membership_role;
+GRANT USAGE ON SCHEMA :schema TO :runtime_role, :membership_role, :dashboard_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_kv TO :runtime_role;  -- deletes come only from the
 GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_membership_kv TO :membership_role;  -- framework, compared
-GRANT SELECT, INSERT, UPDATE ON :schema.daserver_confirm TO :runtime_role, :membership_role;  -- on the version
+GRANT SELECT, INSERT, UPDATE, DELETE ON :schema.daserver_dashboard_kv TO :dashboard_role;
+GRANT SELECT, INSERT, UPDATE ON :schema.daserver_confirm TO :runtime_role, :membership_role, :dashboard_role;  -- on the version
 COMMENT ON TABLE :schema.daserver_kv IS 'DaServer schema <n>';     -- the last step, in a transaction of its own
 ```
 
@@ -1184,36 +1223,8 @@ ends within about 30 s), and, only when `current_setting('server_version_num')::
 `transaction_timeout = 0`. Nothing the server times ends a synchronous wait. Against an external database the
 operator provisions the roles.
 
-**The Dashboard's tables** stay in PostgreSQL (the Dashboard does not go through `IStore`; its lock and audit need
-SQL's unique indexes and grants), created by the roles step with `AddDaServerDashboard` and owned by the owner role:
-`daserver_audit (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, action_id text NOT NULL, phase text NOT NULL
-CHECK (phase IN ('intent','outcome')), at timestamptz NOT NULL DEFAULT now(), who text NOT NULL, action text NOT NULL,
-target text NOT NULL, reason text, outcome text)` with indexes on `(at)` and `(action_id)`, insert-only for the
-Dashboard's role (`INSERT, SELECT`, `USAGE` on the identity sequence); `daserver_actions (action_id text PRIMARY KEY,
-idem_key text NOT NULL, kind text NOT NULL CHECK (kind IN ('action','resize')), type text, node text, incarnation
-bigint, attempt smallint, state text NOT NULL CHECK (state IN
-('requested','accepted','running','done','failed','stalled','unknown')), requested_at timestamptz NOT NULL DEFAULT
-now(), claimed_by text, lease_until timestamptz, run_id text, CHECK ((kind = 'action' AND type IS NOT NULL) OR (kind
-= 'resize' AND type IS NULL AND node IS NOT NULL AND incarnation IS NOT NULL AND (attempt IN (1, 2) OR attempt IS
-NULL))))` (an action's `type` is the server type, or `'*cluster'` for the whole cluster; a resize has none, so it
-never takes or waits for a type's lock), with a unique partial index on `(type) WHERE kind = 'action' AND state IN
-('requested','accepted','running','unknown','stalled')` (one unfinished action per type: the lock; every
-lock-taking insert first takes `pg_advisory_xact_lock(hashtext('daserver_actions'))`, since a type's row and
-`*cluster` have different keys), a unique index on `(node, incarnation, attempt) WHERE kind = 'resize' AND attempt
-IS NOT NULL` (the automatic resize runs at most twice per node incarnation), a unique index on `(idem_key) WHERE
-kind = 'resize' AND attempt IS NULL AND state NOT IN ('done','failed')` (an operator's Resize, deduplicated by its
-idempotency key) and an index on `(idem_key, requested_at)`, on which the Dashboard's role has `SELECT, INSERT,
-UPDATE, DELETE` (it expires finished rows older than a day); and `daserver_dataprotection` (the Data Protection key
-ring), which its role may update. The tables are small, so their indexes are built plainly in the step's
-transaction. A `SECURITY DEFINER` function `daserver_audit_expire(retention interval)` (`SET search_path =
-pg_catalog, pg_temp`, `EXECUTE` revoked from `PUBLIC` and granted to the Dashboard's role) removes expired audit rows
-when the Dashboard calls it daily with `DaServer:Dashboard:AuditRetention` (unset: kept forever). The Dashboard's
-writes follow the commit rule above: an action's audit intent row commits cleanly before its `daserver_actions` row is
-written, and the action is called only once that row's `COMMIT` returned cleanly; an `Unknown` commit is confirmed by
-a real write, never by calling: a fresh audit row for the intent, and `UPDATE daserver_actions SET state = state WHERE
-action_id = :id` for the action's row (an update writes WAL and waits for the standby; an `INSERT … ON CONFLICT DO
-NOTHING` writes nothing and proves nothing). The runtime and membership roles have no grant on these tables, and the
-Dashboard's role none on the store's.
+**The Dashboard's table**, `daserver_dashboard_kv`, holds the Dashboard's keys (above) for its own role, which has
+no grant on the records' or membership's tables, and neither of their roles one on it.
 
 ### Other providers
 
