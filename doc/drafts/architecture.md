@@ -698,7 +698,11 @@ in short:
     (`MembershipVersionRegressed`), and snapshots pushed by peers are compared against that adopted version from
     then on. The node also keeps the highest version it has ever held: after adopting a regressed version it writes
     the document at a version above that, with every type's placement version raised to the new table version (the
-    raise counts as a change of every type), before it claims an epoch again, and waits for that write to land, so a
+    raise counts as a change of every type) and every slot whose owner differs between the highest view it held (it
+    keeps that view's slot table) and the regressed one marked handoff-pending from the owner in the lost history (so
+    the regressed owner asks that node before it activates any of the slot's keys, and an unsaved actor the lost
+    history moved is handed back rather than activated twice, test `RegressedSlotMoveStaysHandoffPending`), before it
+    claims an epoch again, and waits for that write to land, so a
     number a lost write used never names different content, no claim runs on a regressed view, and no record or
     activation stamp from the lost history outranks the new placement; a claim whose `Get` shows a stored placement
     version above the node's table version reads the document again first (a stale view is not a regression: the
@@ -706,11 +710,16 @@ in short:
     held the lost history died before raising) raises it the same way, above that version, before it claims; and after any
     reconnect of its membership client it reads the table before it claims (test
     `MembershipVersionRegressionAfterFailoverAdopted`, which also checks the raise and the re-read).
-  - **Membership writes land like data writes**: a write acts (a death, a `dead_seen_at` stamp, a re-placement
-    version, a restart permit) and is pushed to peers only once it is `Landed`; one that ends `Unknown` is settled by a
-    `Confirm` of its own, never acted on before. The lease rests only on plain `Get`s of the document: a pending
-    `Confirm` never stands in for a lease read nor delays one, so a write whose outcome stays unknown (the store
-    slow, or refusing writes) costs at most that write, never the node's lease. At most one membership write per node is in flight, and heartbeats skip while one is pending.
+  - **Membership writes land like data writes**: the writer acts on a write (a death, a `dead_seen_at` stamp, a
+    re-placement version, a restart permit) and pushes it to peers only once it is `Landed`; one that ends `Unknown` is
+    settled by a `Confirm` of its own, and its writer never acts on it before. Views adopted from reads (the writer's
+    own included) may still hold a write `Strict` can lose (a commit is visible while it waits for its standby); the
+    regression path above covers those. The lease rests only on plain `Get`s of the document: a pending `Confirm`
+    never stands in for a lease read nor delays one, so an unknown outcome never costs the node's lease. At most one
+    membership write per node is in flight, so while one stays pending (the store slow, or failing writes) every later
+    one from that node waits: heartbeats skip, and on the coordinator deaths, `dead_seen_at` stamps, re-placements and
+    restart permits wait too. Its age is exported (`daserver.membership.write_pending_age`, unit `s`, 0 while none
+    is pending; alert `DaServerMembershipWritePending` above 60 s for 2 min).
   - **A node declared dead stops**: once it reads itself `Dead`, or, once joined (its join write `Landed` or shown
     by `Confirm`; a join that ended `Unknown` and did not land is retried, not taken as death), reads a document that
     no longer holds its own entry (a joined node's entry leaves only at its re-placement, after it was `Dead`, so
@@ -1014,16 +1023,20 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   `DaServer:Membership:AcceptDurability` does, and on a Dashboard store below `Strict` unless
   `DaServer:Dashboard:AcceptDurability` does. Development runs and `TestCluster` are exempt: they start on any class
   and log a warning (ADR-104).
-- **Unsafe settings**: in every class the self-check reports a store configured to corrupt rather than lose writes
-  (the PostgreSQL provider: `fsync` or `full_page_writes` off, read on every new connection as well as in each check,
-  so a reload is seen at the next connection or check, whichever comes first). The effective class is then `Unsafe`,
-  below `Local`, and the check reruns every 10 s until it passes. Found at start, the node does not start serving: it
-  stays not ready and rechecks, which the startup probe counts as progress, as it counts waiting for a store that does
-  not answer (section 2), and it becomes ready once the setting is fixed. Found later, nothing is refused: the store
-  keeps working as `Local` (fencing only, output released as for `Local`), and `DaServerStoreUnsafe` (critical, within
-  30 s) asks the operator to restore the setting. Development runs and `TestCluster` are exempt with a warning: they
-  start and export the class they found, so test containers may run without `fsync` (tests
-  `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`).
+- **Unsafe settings**: in every class the provider reports a store configured to corrupt rather than lose writes
+  (the PostgreSQL provider: `fsync` or `full_page_writes` off). This check is one cheap read of the settings and runs
+  on every new connection and every 10 s, apart from the full self-check, so a reload is seen within 10 s. The
+  effective class is then `Unsafe`, below `Local`, until a check passes. Found at a fresh start, the check runs before
+  the membership join: the node never writes `Joining`, stays not ready and rechecks every 10 s, which the startup
+  probe counts as progress ([deployment.md section 2](deployment.md#2-workloads), the startupProbe row), and it joins and becomes ready once the
+  setting is fixed. Found while serving, or by a hot restart's standby (a handover is not a start: arming is not
+  refused for it, the standby takes the worlds and goes on as here), nothing is refused: the framework runs the
+  `Local` rules (fencing, output released as for `Local`), though no class guarantee holds across a crash of the
+  database host while the setting is unsafe (it can leave a record and its rows at different versions), and
+  `DaServerStoreUnsafe` (critical) fires 30 s after the node reports it and asks the operator to restore the setting.
+  Development runs and `TestCluster` are exempt with a warning: they start and export the class they found, so test
+  containers may run without `fsync` (tests `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`,
+  `UnsafeAtStartStaysNotReady`, `UnsafeDuringHotRestartTakesOver`).
 - **What each class guarantees** (R13). `Strict`: what a `Commit` item sent leaves only once its write is durable,
   so released output survives every failover; an `Unknown` write releases nothing until `Confirm`. Below `Strict`
   the guarantee is fencing only: two owners' writes never mix (the version is the fencing token), whatever the store
@@ -1292,10 +1305,10 @@ The self-check reads `synchronous_commit`, `synchronous_standby_names` and `pg_s
 set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
 publishes is a primary and two standbys in three zones under `ANY 1` with quorum-aware failover, so maintenance on one
 standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); the local single-node
-database of `aspire run` is `Local` and exempt. In every class the check also reads `fsync` and `full_page_writes`:
-either `off` is unsafe (a crash can corrupt the database rather than lose recent commits): the class is `Unsafe`, a node
-stays not ready at start and keeps working as `Local` when it is found later, whatever `AcceptDurability` says (section
-4's durability classes);
+database of `aspire run` is `Local` and exempt. In every class the provider also reads `fsync` and `full_page_writes`
+(on every new connection and every 10 s): either `off` is unsafe (a crash can corrupt the database rather than lose
+recent commits): the class is `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under
+the `Local` rules, whatever `AcceptDurability` says (section 4's durability classes);
 `synchronous_commit` `off` or `local` (a crash in place, or a failover, loses the last acknowledged commits) declares
 `Local`, and a synchronous standby without quorum-aware failover (or `remote_write`) declares `Replicated` (test
 `UnsafeDurabilitySettingsDetected`).
@@ -1371,7 +1384,7 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
 | 2. Concurrency | Linearizability per key: random claim, write and delete histories from racing clients checked against a compare-and-set register model (a Porcupine-style checker shipped in the kit); exactly one taker per placement version |
 | 3. Fault injection | The `Unknown` obligation through the proxy: a connection dropped after the store's commit point was forwarded (PostgreSQL: its `COMMIT`; MongoDB: `commitTransaction` or the single write; Redis: the function call) is never `StoreLevel` or `NotApplied`, only `Landed` or `Unknown`, and `Confirm` then agrees with the store; dropped before it is a safe retry, and may answer `StoreLevel` (a PostgreSQL data batch whose deadline passed before `COMMIT`); a commit point's reply delayed past a deadline is `Unknown`; a half-open connection is found within the provider's stated bound; a stalled durability wait pauses writes while membership reads still answer; plus the store-side faults a provider supplies (a cancelled synchronous wait on PostgreSQL, a step-down on MongoDB, `CLIENT PAUSE` on Redis) |
 | 4. Failover, per class | Load with recorded acknowledgements, the primary killed or partitioned at random points, a promotion: `Strict` loses no `Landed` or confirmed write over many runs; `Replicated` and `Local` may lose writes, but no write under an older token lands after a newer claim the store still holds, and no two owners' writes mix. The PostgreSQL commit tests (`UnknownReleasesOnlyAfterConfirm` with the primary up and the standby down, `RetriedWriteConfirmedBeforeRelease`, `ConfirmFindsWriteAbsentResends`, `TimedOutClaimConfirmedByRerun`, `MembershipVersionRegressionAfterFailoverAdopted`) are kit tests here |
-| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) keeps a node not ready in every class and, found later, drops the class to `Unsafe` |
+| 5. Self-check | A misconfigured store lowers the effective class (PostgreSQL without a synchronous standby, MongoDB at `w: 1`, Redis with eviction, no AOF or no replica), and a production node without `AcceptDurability` refuses to start; an unsafe setting (PostgreSQL `fsync` or `full_page_writes` off) keeps a fresh start not ready before it joins in every class and, found while serving, drops the class to `Unsafe` within 10 s |
 | Profile | Not pass or fail: BenchmarkDotNet batched writes and claims per second at 1 and 5 ms of injected latency, recorded per provider |
 
 ## 5. Migration, upgrades, hot restart
@@ -1390,11 +1403,15 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
   Arrivals load with `markWritten: true`, so `[Changed<T>]` systems treat them as written (re-subscribe, re-cell,
   first checkpoint). A forwarding marker (key → target) forwards all mail for the key, in order; while it is present the node does not
   activate the key. It is dropped as soon as one of these holds, and the key's mail then follows ordinary routing and
-  activation (forwarded by the current placement, or activated here when the placement names this node): its target has
+  activation (forwarded by the current placement, or handled here when the placement names this node, which for a slot
+  still handoff-pending asks its source first): its target has
   left this node's view (test `ForwardingMarkerToLeftNodeFallsBack`); the current placement names this node (the key
   came back, test `ForwardingMarkerDroppedWhenKeyReturns`); or this node's view and every live member's view are at or
-  above the move's placement version. A live member is one the view lists `Active` with the generation it saw and that
-  is not frozen (a frozen member's view, `Joining` and `Rejoining` ones do not hold markers); a member's view version is
+  above the move's placement version. A live member is one that
+  is listed `Active` with the generation the view saw, frozen or not (a frozen member either resumes and its next frame
+  carries its view within a ping interval, or exits after `IsolationExit`, is written `Dead` and leaves the view, so it
+  no longer counts), and an entry holding `restart_until` counts the same; `Joining` ones do not hold
+  markers; a member's view version is
   the table version its link frames carry (the store's heartbeat keys carry only `Now`). Mail that still arrives after
   the drop is forwarded by the current placement like any mail for a key the node does not own, so dropping the marker
   loses nothing (only its order with mail sent later is no longer kept). Across shards it is bytes too (`MoveEntities` needs
@@ -1437,7 +1454,8 @@ layers 1 to 3 and 5 pass, and layer 4 for that class on a real topology; first-p
     activates on demand) or refused (a rolling upgrade). Arming writes every `Unsaved` root once while the actors run
     (so a crash of the new process later loses only the changes since), writes the arm file (nonce, armed manifest
     hash, deadline) and is refused while membership or a handoff is changing placement, while another node holds the
-    restart permit, when the standby would not fit in memory (it needs about the node's working set: its own
+    restart permit (never for an `Unsafe` store: the standby takes the worlds and goes on under the `Local` rules, as a
+    serving node does, section 4), when the standby would not fit in memory (it needs about the node's working set: its own
     memory limit or the machine's available memory on bare metal and Compose; on Kubernetes the rollout first resizes
     the parked container's requests in place, below), or when the store's measured p99 write latency is above a
     quarter of `DaServer:HotRestart:FreezeBound` (2 s): the freeze waits for the writes in flight and one write of every

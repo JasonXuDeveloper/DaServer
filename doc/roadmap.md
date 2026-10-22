@@ -325,10 +325,10 @@ Keep this file current: tick items when done, add items when scope changes.
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
-        in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection as
-        well as in each check and re-checked every 10 s while it holds: a node starting on it stays not ready
-        (`UnsafeAtStartStaysNotReady`), one finding it later refuses nothing, works as `Local` and raises
-        `DaServerStoreUnsafe` (`UnsafeStoreDropsClassAndAlerts`; development and `TestCluster` exempt with a warning:
+        in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
+        every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
+        finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
+        `DaServerStoreUnsafe` (`UnsafeStoreDropsClassAndAlerts`, `UnsafeDuringHotRestartTakesOver`; development and `TestCluster` exempt with a warning:
         they start and export the class they found), `synchronous_commit` `off` or `local` declared `Local`
         (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
@@ -340,12 +340,14 @@ Keep this file current: tick items when done, add items when scope changes.
         version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
         version held raised past, with every type's placement version, before the next claim, a claim reading a higher
         stored placement version re-reading the document and raising past it only when the fresh one is still below
-        (`StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`), and the document re-read after a
-        reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
+        (`StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`), the raise marking every slot whose owner
+        differs from the highest view held handoff-pending from the lost-history owner
+        (`RegressedSlotMoveStaysHandoffPending`), and the document re-read after a reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
         (`MembershipDocumentBoundedUnderChurn`), a node whose entry left the document stopping, peers refusing a
         generation their view does not list (`ReplacedNodeAbsentFromDocumentStops`); one membership write in
-        flight, heartbeats skipped while one is pending, its own store client with a connection kept for reads:
-        `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
+        flight, heartbeats skipped while one is pending and its age alerted (`daserver.membership.write_pending_age`,
+        `DaServerMembershipWritePending`: `MembershipWritePendingAlerted`), its own store client with a connection kept
+        for reads: `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms · 2^16 + 16 random bits, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
         snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
