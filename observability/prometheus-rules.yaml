@@ -322,10 +322,14 @@ groups:
         # serving with, while still a class (Unsafe has its own rule below): a replication setting changed under a
         # running cluster (no synchronous standby configured, eviction turned on). Below Strict a failover or crash may
         # lose recent writes; nothing alerts on that, the class accepted it. Labelled by store (actors, membership,
-        # dashboard).
+        # dashboard). The started class is the node's first serving start, carried over a hot restart. Development
+        # and TestCluster nodes export daserver_store_unsafe_exempt 1 and never fire.
         expr: |
-          (min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m])) >= 0)
-            < min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m]))
+          (
+            (min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m])) >= 0)
+              < min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m]))
+          )
+            unless on (cluster, type, node) (max by (cluster, type, node) (last_over_time(daserver_store_unsafe_exempt[2m])) == 1)
         for: 5m
         labels:
           severity: critical
@@ -337,14 +341,12 @@ groups:
         # Target (roadmap W6, ADR-104): the store's self-check finds a setting that can corrupt the database rather than
         # lose recent writes (PostgreSQL fsync or full_page_writes off), read on every new connection and every 10 s,
         # so this fires about 30 s after a node reports it. Nothing is refused: a serving node (or a hot restart's
-        # standby) goes on under the Local rules, and a fresh start waits not ready before it joins, exporting the class
-        # but no started class. A development or TestCluster node, exempt,
-        # started serving on it and exports -1 as its started class too, so it does not fire; one that started on a
-        # safe setting and is reloaded to an unsafe one does.
+        # standby) goes on under the Local rules, and a fresh start waits not ready before it joins. Development and
+        # TestCluster nodes are exempt: they export daserver_store_unsafe_exempt 1 and never fire.
         expr: |
           min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m])) == -1
-            unless on (cluster, type, node, store)
-              min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m])) == -1
+            unless on (cluster, type, node)
+              (max by (cluster, type, node) (last_over_time(daserver_store_unsafe_exempt[2m])) == 1)
         for: 30s
         labels:
           severity: critical
@@ -373,8 +375,9 @@ groups:
       - alert: DaServerMembershipWritePending
         # Target (roadmap W6, ADR-103): a node has at most one membership write in flight, so one whose outcome stays
         # unknown (the store slow, or failing writes while reads answer, e.g. a membership store of its own) holds back
-        # every later one from that node: its heartbeats skip, and on the coordinator deaths, dead_seen_at stamps,
-        # re-placements and restart permits wait. The lease rests on reads, so the node keeps running; this names the
+        # every later one from that node: its heartbeats and its own restart permit wait, and on the coordinator deaths,
+        # dead_seen_at stamps and re-placements wait (a coordinator stuck past IsolationExit steps down). The lease rests
+        # on reads, so the node keeps running; this names the
         # stall that DaServerStoreWritesBehind (actor writes only) does not. The gauge is 0 while nothing is pending.
         expr: max by (cluster, type, node) (last_over_time(daserver_membership_write_pending_age_seconds[2m])) > 60
         for: 2m
@@ -382,9 +385,25 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.node }} has had a membership write pending for over a minute"
-          description: "Until it settles, the node's later membership writes wait: heartbeats, and on the coordinator deaths and re-placements. Check the membership store's write path (locks, disk, its synchronous standbys) and its logs."
+          description: "Until it settles, the node's later membership writes wait: heartbeats and its own restart permit, and on the coordinator deaths and re-placements. Check the membership store's write path (locks, disk, its synchronous standbys) and its logs."
           daserver_limit: "60"
-          daserver_unit: "seconds"
+          daserver_unit: "s"
+
+      - alert: DaServerMembershipRegressed
+        # Target (roadmap W6, ADR-103): a node read a membership version below one it held, or a stored placement version
+        # still above a fresh document. Membership needs a Strict store, whose provider never lets a waiting commit become
+        # visible early, so this is a store fault (on PostgreSQL a crash-restart in place followed by a failover before
+        # the standby received the commit). The framework does not repair it: the node stops and exits with code 75, and
+        # the platform restarts it with a new generation; unsaved state on it is lost. The counter is exported at 0 from
+        # node start and pushed before the exit, so the one increment is seen.
+        expr: sum by (cluster, type, node) (increase(daserver_membership_regressions_total[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} read a membership version older than one it held and stopped"
+          description: "The membership store lost a write it had shown, which a Strict store never does. Check the membership database's failover (quorum-aware, strict mode) and its synchronous standbys; the node restarts with a new generation."
+          daserver_limit: "0"
+          daserver_unit: "regressions"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
