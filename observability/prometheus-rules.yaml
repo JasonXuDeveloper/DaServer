@@ -395,7 +395,9 @@ groups:
         # Target (roadmap W6, ADR-101): the membership role's connections against its CONNECTION LIMIT. A membership
         # write waiting for a standby is never terminated, a process holds one pending membership item at a time, and
         # one waits before its first membership write while the role's waits in COMMIT past StatementTimeout make no
-        # progress, so in a standby outage the stuck backends stay those of the processes running when it began; this
+        # progress, so in a standby outage the stuck backends are at most one per live process plus those of processes
+        # that died while stuck (a crash-restart of the primary, a termination or a standby answering briefly starts
+        # that window again, so nobody terminates them: the standby is restored); this
         # catches a limit sized too small for them, or another client on the role, before a node that must reconnect
         # is refused and its lease runs out. Every node reads, on its self-check cadence, the role's count across every
         # database (pg_stat_activity filtered on its own user, which a role sees without pg_read_all_stats) and its
@@ -408,7 +410,7 @@ groups:
           severity: warning
         annotations:
           summary: "The membership role uses over 80% of its connection limit"
-          description: "A node whose membership connection drops may not reconnect, then its lease runs out. Check for backends stuck in COMMIT (a standby outage) and other clients on the role, and size the role's CONNECTION LIMIT for every node process the cluster may run."
+          description: "A node whose membership connection drops may not reconnect, then its lease runs out. Check for backends stuck in COMMIT (a standby outage: restore the standby, never terminate those backends) and other clients on the role, and size the role's CONNECTION LIMIT for every node process the cluster may run."
           daserver_limit: "0.8"
           daserver_unit: "of the role's CONNECTION LIMIT"
 
