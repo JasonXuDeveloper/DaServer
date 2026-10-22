@@ -127,7 +127,7 @@ The repository ships two starting points, checked against a running node:
   number as the annotation `daserver_limit` (and its unit as `daserver_unit`): change both together when you tune it.
   Most rules group by `cluster`, `type` and `node`; the exceptions: `DaServerAskLatencyHigh`, a type's p99, by `cluster`
   and `type`; `DaServerOnceAskOld` by `cluster`, `type` and `actor_type`; `DaServerMembershipDocumentLarge`, about the
-  one document, by `cluster`; `DaServerOnceStaleAsking`, whose stopped-ask gauge is counted from the store by whichever node sweeps and maps the
+  one document, and `DaServerMembershipConnectionsLow`, about the cluster's one membership role, by `cluster`; `DaServerOnceStaleAsking`, whose stopped-ask gauge is counted from the store by whichever node sweeps and maps the
   hosting server type onto `type`, by `cluster` and `type`; both it and `DaServerOnceAskOld` keep `actor_type` as a label, StaleAsking naming it in its description and AskOld in its summary; `DaServerGcPauses` by `daserver_cluster`, `job` and `instance` (the runtime's own GC metrics carry those); `DaServerMessagesDropped` adds `reason`; `DaServerStoreUnsafe` and `DaServerStoreDurabilityDropped` add `store`; `DaServerMembersDisagree` also keeps `cluster`, `type` and `node`: one alert per lagging node. So Alertmanager groups an incident per rule and server type; a
   label a node does not send yet is empty, so the rules work on one cluster today. `DaServerNodeSilent` fires for a
   node seen in the last 15 minutes that has pushed nothing for two minutes, whose series would otherwise vanish and

@@ -1131,8 +1131,9 @@ Replaced by ADR-081.
     `StoreDegraded` and the metrics. Hand-written SQL, no migration library. Today's `daserver_actors` table is
     neither read nor converted (pre-1.0).
   - **Providers:** `IStore` (ADR-102) is all a provider implements. `InMemoryStore` serves tests, development and a single
-    storeless node: versions, conditions and `Now` as a `Strict` store, `Strict` as a single node's membership and
-    `Local` for records (ADR-104). `PostgreSqlStore` is the default for deployments,
+    storeless node: versions, conditions and `Now` as a `Strict` store, `Strict` as a single node's membership, and
+    records and the Dashboard's keys only in development and `TestCluster`, since any restart loses them: a production
+    node refuses it for them (ADR-104). `PostgreSqlStore` is the default for deployments,
     written with Npgsql and no ORM (values are opaque bytes, so the schema never follows the components); the record
     bytes are the world's pooled buffers, passed without copying. `AddPostgreSqlStore()` wires it on Aspire's Npgsql
     integration; the AppHost passes the connection string (`WithActorStore`).
@@ -1644,8 +1645,8 @@ Replaced by ADR-081.
       cost it its unsaved state. The restarting node writes its own permit and deadline into its entry; the
       coordinator's decisions (slot moves, declaring an expired restart `Dead`) are versioned writes, so a stale
       coordinator cannot act; a hot restart keeps the entry, generation and start time;
-    - without a store a node starts only with `DaServer:Membership:SingleNode = true` (one node: local runs,
-      `AllInOne`), served by the in-memory table; any other node without a membership store (the actor store
+    - without a store a node starts only with `DaServer:Membership:SingleNode = true` (one node: local runs, a
+      production node whose types are all unsaved), served by the in-memory table; any other node without a membership store (the actor store
       or `WithMembershipStore(db)`) refuses to start, so a misconfigured replica never forms a second
       cluster of one, and `SingleNode` together with a store refuses to start too; a single node's hot-restart handover carries its member entry in its header, which seeds the standby's in-memory table, so its hot restart keeps its worlds. `DaServer.Aspire` sets `SingleNode` for an AppHost with one node and no store and adds PostgreSQL
       when it has more than one. `TestCluster` shares one in-memory store, wrapped per node in a fault-injecting
@@ -2444,8 +2445,9 @@ Replaced by ADR-098.
     - **Audit.** The audit holds the intent before the call and the outcome after it, with the same action id, which
       the page shows. The intent and the action's key land before the call, and an `Unknown` write is settled by the
       store's `Confirm`, never by calling. The sink is durable as the Dashboard's store's class is: entries in that
-      store (`IStore`, by default on membership's database; ADR-102), each written once and never rewritten (a node
-      without a database keeps it in its in-memory store, for the life of the process). Append-only is the framework's rule, not a database grant: whoever holds the
+      store (`IStore`, by default on membership's database; ADR-102), each written once and never rewritten (a development node
+      without a database keeps it in its in-memory store, for the life of the process; a production node refuses the
+      in-memory store for the Dashboard, ADR-104). Append-only is the framework's rule, not a database grant: whoever holds the
       store's credentials can rewrite the entries, and an operator who needs tamper evidence exports the audit to a
       sink of their own, outside the framework. Retention is the operator's setting
       (`DaServer:Dashboard:AuditRetention`), expired entries deleted compared on their version. The same lines also go
@@ -3304,10 +3306,12 @@ Replaced by ADR-098.
     `idle_in_transaction_session_timeout = 30s`, server keepalive (10 s idle, 2 s interval, 5 probes) and
     `tcp_user_timeout = 30000`, so a lost client's backend that is not waiting for the standby ends within about 30 s;
     the roles' `CONNECTION LIMIT`s hold room for the backends a node can leave in `COMMIT` (`2 × WritesInFlight` per
-    world plus `ActivationSlots`, and per node process running when a standby outage begins one membership write's,
-    never terminated, since a process waits before its first membership write until no other backend of the
-    membership role in its database has waited in `COMMIT` longer than `StatementTimeout`, so replaced pods add
-    none; `pg_read_all_stats` shows a role every backend on the server, hence the role and database filters). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
+    world plus `ActivationSlots`, and per node process running when a standby outage begins, or started within its
+    first `StatementTimeout`, one membership write's, never terminated: a process holds one pending membership item at
+    a time, a repeated settlement waiting for the earlier backend to be gone, and waits before its first membership
+    write while the membership role's waits in its database past `StatementTimeout` make no progress, so replaced pods
+    add none and a slow standby still lets starts through; `pg_read_all_stats` shows a role every backend on the
+    server, hence the role and database filters; the membership role is the cluster's own). Claims, the Dashboard's writes, membership writes and the schema Job's last step commit the same way
     and act only on a clean commit or a `Confirm`.
   - **`Confirm` writes before it reads**: one transaction that upserts the client's marker row
     (`daserver_confirm`), reads the keys and commits; only a clean `COMMIT` answers, since the marker's WAL follows
@@ -3482,6 +3486,7 @@ Replaced by ADR-098.
   `MembershipDocumentBoundedUnderChurn`, `MembershipRequiresStrict`, `MembershipRegressionStopsTheNode`,
   `MembershipWaitNeverTerminated`, `StaleViewClaimRereadsAndForwards`, `ReplacedNodeAbsentFromDocumentStops`,
   `UnknownMembershipWriteNeverHoldsLease`, `MembershipWritePendingAlerted`, `MembershipLeftoverBoundedPerRole`, `MembershipConnectionsLowAlerted`,
+  `RepeatedConfirmWaitsForEarlierBackend`, `HandoverStartsWithNoPendingMembershipItem`,
   `NewMembershipDocumentStartsAboveStamps`,
   `RegressionDetectedAcrossHotRestart`.
 
@@ -3498,9 +3503,10 @@ Replaced by ADR-098.
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
   refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store) or
   `DaServer:Dashboard:AcceptDurability` names the class; membership always needs `Strict` (ADR-103); the in-memory
-  store is `Strict` only as a single node's membership (nothing outlives the process to roll back) and `Local` as an
-  actor or Dashboard store (a crash loses every record), so a production node names `Local` for it, and a hot
-  restart through records refuses an in-memory actor store; development and
+  store is `Strict` as a single node's membership (nothing outlives the process to roll back), while as an actor or
+  Dashboard store it loses every record at any restart, planned or not, which no class describes, so a production node
+  refuses it for `[Persist]` types and the Dashboard with no opt-in (a storeless production node hosts unsaved types
+  only); development and
   `TestCluster` are exempt and log a warning. R13
   holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
@@ -3531,7 +3537,7 @@ Replaced by ADR-098.
   and the start-up log say. Tests `NonStrictStoreRefusedWithoutOptIn`, `MembershipRequiresStrict`,
   `DashboardStoreBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`, `OwnOlderVersionFencedAndCounted`,
   `UnsafeDurabilitySettingsDetected`, `UnsafeStoreDropsClassAndAlerts`, `UnsafeAtStartStaysNotReady`,
-  `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreIsLocalForRecords`, `ThroughRecordsRefusedOnInMemoryStore`.
+  `UnsafeDuringHotRestartTakesOver`, `InMemoryStoreRefusedForRecordsInProduction`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten

@@ -298,7 +298,7 @@ Keep this file current: tick items when done, add items when scope changes.
         classes only; the key layout (records, ask rows, the queued-ask index, `OnceSenders` rows under their root; the due
         and ask indexes as hints written ahead of their record, kept with it when a batch is halved, naming the record
         version they precede and cleaned compared on their versions only once the header has reached it:
-        `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (`Strict` as a single node's membership, `Local` for records and the Dashboard: `InMemoryStoreIsLocalForRecords`; a hot restart through records refused on it: `ThroughRecordsRefusedOnInMemoryStore`); the durability classes (ADR-104): the
+        `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (`Strict` as a single node's membership; records and the Dashboard's keys only in development and `TestCluster`, refused for them in production with no opt-in: `InMemoryStoreRefusedForRecordsInProduction`); the durability classes (ADR-104): the
         effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
         `DaServer:Dashboard:AcceptDurability` (membership always `Strict`, no opt-in), `daserver.store.durability_class`,
         the started class carried over a hot restart and `daserver.store.unsafe_exempt` on development and `TestCluster` nodes,
@@ -325,10 +325,13 @@ Keep this file current: tick items when done, add items when scope changes.
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
         `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`; a membership write's wait never cancelled
         nor its backend terminated, settled once that backend is gone by a `Confirm` on the lookup connection and the
-        entry's `write_seq` (the conditioned-on value plus one; a join starts at 1), a process waiting before its first
-        membership write until no other backend of the role in its database has waited in `COMMIT` past
-        `StatementTimeout`: `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; the role's connections
-        against its limit exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (`RolesStepIdempotent`,
+        entry's `write_seq` (the conditioned-on value plus one; a join starts at 1), one pending membership item per
+        process (a repeated `Confirm` or an `Unknown` heartbeat waits for the earlier backend to be gone:
+        `RepeatedConfirmWaitsForEarlierBackend`), a process waiting before its first membership write while the role's
+        waits in its database past `StatementTimeout` make no progress (a slow standby lets it through, a stalled one
+        holds it): `MembershipWaitNeverTerminated`, `MembershipLeftoverBoundedPerRole`; a handover starting only with no
+        pending membership item: `HandoverStartsWithNoPendingMembershipItem`; the role's connections, across every
+        database, against its limit (not exported when unlimited) exported and alerted: `MembershipConnectionsLowAlerted`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
@@ -805,7 +808,7 @@ Keep this file current: tick items when done, add items when scope changes.
       firing Prometheus alerts (the outlier rule only naming culprits and the rows that stand out), distributions,
       outliers and the slowest actors computed on the server, logs from Loki (LogQL
       `query_range`, the patterns API, one query per type, cached in the snapshot), the audit in its durable sink
-      (entries in the Dashboard's `IStore`; on a node without a database, the in-memory store, for the life of the process), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
+      (entries in the Dashboard's `IStore`; in development without a database, the in-memory store, for the life of the process, which a production node refuses), history links to Grafana at the same time range, OIDC with view and act roles, actions confirmed
       by typing and audited (with a reason for type- and cluster-wide actions, preconditions, idempotency keys, one
       action per type); the node's OpenTelemetry resource (`service.name` the group, `service.instance.id` the
       node) and framework logs with `daserver.actor.type`, `daserver.actor.key` and the trace id; the ask-latency histogram (`daserver.ask.duration`, per
