@@ -861,7 +861,7 @@ in short:
     `DaServer.Aspire` sets `SingleNode` when the AppHost has one node and no store, and adds a PostgreSQL resource, the
     actor store and membership's, when it declares more than one node and no store, published in the same shape as a
     declared store (a primary and two synchronous standbys under `ANY 1`: on Kubernetes across three zones with
-    quorum-aware failover, on Docker Compose on one host with manual promotion only; `QuorumFailover` set either way:
+    quorum-aware failover, on Docker Compose on one host with manual promotion only; `SafeFailover` set either way:
     [deployment.md](deployment.md), the Database row and section 8), so its class is `Strict`; when any node's records or
     Dashboard would use the in-memory store in what it publishes (one storeless node hosting a `[Persist]` type or
     the Dashboard, or an AppHost that names only a membership store), `aspire publish` fails and names them, since
@@ -1035,13 +1035,14 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
 
 | Class | An acknowledged write | Examples |
 |---|---|---|
-| `Strict` | Survives any single failure and any failover the store performs: quorum or synchronous commit, promotion only of a replica holding every acknowledged write, no silent fallback | PostgreSQL with strict synchronous replication and quorum-aware failover (below); MongoDB with majority writes; CockroachDB and YugabyteDB (to verify, roadmap W6) |
+| `Strict` | Survives the loss of any one database instance and any failover the store performs: quorum or synchronous commit, promotion only of a replica holding every acknowledged write, no silent fallback; the deployment's failure domain bounds it (three zones on Kubernetes; one host on Docker Compose, whose loss is not covered) | PostgreSQL with strict synchronous replication and failover that never promotes a standby missing an acknowledged commit (below); MongoDB with majority writes; CockroachDB and YugabyteDB (to verify, roadmap W6) |
 | `Replicated` | Reached at least one replica or its disk, but a failover may still promote one without it, or replication may degrade | Redis or Valkey with `WAITAOF` and `min-replicas-to-write`; MySQL semi-synchronous replication with its fallback timeout |
 | `Local` | Is on the primary only | A single instance; asynchronous replication |
 
 - The **effective class** is the lower of the provider's declaration and its self-check, run at start and every
   `DaServer:Store:SelfCheckInterval` (5 min) (a PostgreSQL without a synchronous standby, a MongoDB whose effective
-  write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged, exported per
+  write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged (on `Strict`
+  with the deployment's failure domain: a one-host Compose database says the host's loss is not covered), exported per
   store (`daserver.store.durability_class`, 2 `Strict`, 1 `Replicated`, 0 `Local`, -1 `Unsafe`, and the class at
   the node's first serving start, `daserver.store.durability_class_started`, carried over a hot restart and
   re-evaluated there against the new configuration's acceptance (section 5), and absent while a node waits not ready; `daserver.store.unsafe_exempt`, 1 on an
@@ -1362,8 +1363,10 @@ a `Confirm` is answered by a standby (test `DataSourcesRequireReadWrite`). Membe
 write's backend up.
 
 **`Strict` on PostgreSQL**: `synchronous_commit` `on` or `remote_apply`, `synchronous_standby_names = 'ANY 1 (…)'`
-over two standbys, and quorum-aware failover that promotes a standby only when it can prove that standby holds
-every acknowledged commit and waits otherwise (Patroni 4's `synchronous_mode: quorum` with
+over two standbys, and failover that never promotes a standby missing an acknowledged commit: either no automatic
+failover at all, an operator promoting by hand only a standby shown to hold every acknowledged commit
+(`DaServer.Aspire`'s Docker Compose shape), or quorum-aware failover that promotes a standby only when it can prove
+that standby holds every acknowledged commit and waits otherwise (Patroni 4's `synchronous_mode: quorum` with
 `synchronous_mode_strict: true`, which writes `synchronous_standby_names` itself; CloudNativePG's quorum-based
 failover, 1.27 and later, with `postgresql.synchronous` `method: any` and `dataDurability: required`; a managed
 service's zone-redundant mode that promotes only a replica holding every acknowledged commit). With no synchronous
@@ -1377,12 +1380,20 @@ creates this `SECURITY DEFINER` function, owned by the owner role, the one role 
 configured schema of every database the cluster's stores use, as step (6) below shows; callers name it with its
 schema; checked on 16: each of the runtime, membership and Dashboard roles sees `streaming`/`quorum` through it and
 `NULL` directly, and a role without the grant is refused), and declares
-`Strict` only when they match and the operator has stated that failover never promotes a standby missing an acknowledged commit: a quorum-aware failover tool, or no automatic failover at all, an operator promoting by hand only a standby shown to hold every acknowledged commit (`DaServer:Store:PostgreSql:QuorumFailover`,
+`Strict` only when they match and the operator has stated that failover never promotes a standby missing an acknowledged commit: a quorum-aware failover tool, or no automatic failover at all, an operator promoting by hand only a standby shown to hold every acknowledged commit (`DaServer:Store:PostgreSql:SafeFailover`,
 set by `DaServer.Aspire` for what it publishes, since failover policy is not visible from SQL). What `DaServer.Aspire`
 publishes is a primary and two standbys under `ANY 1`: on Kubernetes in three zones with quorum-aware failover, so
 maintenance on one standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook); on
-Docker Compose three services on the one host with no automatic failover (no Patroni or etcd), so a dead primary
-stops writes until an operator promotes a standby holding every acknowledged commit ([operations.md](../operations.md#promoting-a-standby-on-compose)),
+Docker Compose three services on the one host with no automatic failover (no Patroni or etcd): the standbys stream as
+a `<prefix>_replication` role (`REPLICATION`, its password a secret file like the others, one `pg_hba` line for the
+Compose network) under the application names `postgres_a` and `postgres_b`, which `synchronous_standby_names =
+'ANY 1 (postgres_a, postgres_b)'` must match (a hyphen is not valid unquoted there); which service is primary is the
+published parameter `DaServer:Store:PostgreSql:ComposePrimary` (`postgres`, `postgres-a` or `postgres-b`, default
+`postgres`), which all three entrypoints obey, a server whose data is not on that primary's timeline refusing to
+start; all three are `restart: unless-stopped`; the nodes connect with one multi-host read-write string
+(`Host=postgres,postgres-a,postgres-b;Target Session Attributes=read-write`), so they follow a promoted primary
+without being recreated. A dead primary stops writes until an operator promotes a standby holding every acknowledged
+commit ([operations.md](../operations.md#promoting-a-standby-on-compose)),
 and losing the host is not covered (checked on 16: a primary and two local standbys read `quorum` through
 `daserver_replication()`; test `ComposePublishesStrictDatabase`); the local single-node database of `aspire run` is
 `Local` and exempt. In every class the provider also reads `fsync` and `full_page_writes`
@@ -1390,7 +1401,8 @@ and losing the host is not covered (checked on 16: a primary and two local stand
 recent commits): the class is `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under
 the `Local` rules, whatever `AcceptDurability` says (section 4's durability classes);
 `synchronous_commit` `off` or `local` (a crash in place, or a failover, loses the last acknowledged commits) declares
-`Local`, and a synchronous standby without quorum-aware failover (or `remote_write`) declares `Replicated` (test
+`Local`, and a synchronous standby without `SafeFailover` (its failover may promote a standby missing an
+acknowledged commit) or with `remote_write` declares `Replicated` (test
 `UnsafeDurabilitySettingsDetected`).
 
 **The roles step.** The schema Job does not create roles. The samples' AppHosts add an init step (`{cluster}-roles`,
@@ -1409,13 +1421,19 @@ strings it writes, test `RoleNamesMatchBetweenAspireAndSql`). Cluster names are 
 through the same shortening. Roles are per server, not per database, so the prefix must be unique on the server: two
 clusters of one name and schema in two databases of one server (staging and production) set `RolePrefix`. The step
 enforces it: in the transaction that creates a role (one `DO` block) it stamps it with `COMMENT ON ROLE` naming the
-cluster's membership store database and schema (`format('daserver:%I/%I', <membership database>, <schema>)`: a
-cluster has exactly one membership store, however many databases its other stores use), compares every role of its
+cluster's membership store: its server, database and schema (`format('daserver:%s/%I/%I', <system_identifier>,
+<membership database>, <schema>)`, the system identifier from `pg_control_system()` on the membership server, which
+any role may read (checked on 16, no grant) and which a promotion keeps: a cluster has exactly one membership store,
+however many databases its other stores use, and two servers with a database of the same name never share a mark),
+compares every role of its
 prefix with that mark in every database it visits (never with `current_database()`), and refuses, naming `RolePrefix`,
 when a role carries another mark or none (test `RolePrefixUniquePerServer`: one cluster's second store database
-converges, another cluster's membership database or another schema under the same prefix is refused, and so is an
-unmarked role; checked on 16 with an actor database and a membership database on one server); roles an operator
-provisioned by hand are adopted by setting that comment on them; the
+converges, another cluster's membership database (on this server or another) or another schema under the same prefix
+is refused, and so is an unmarked role; checked on 16 with an actor database and a membership database on one server);
+roles an operator provisioned by hand are adopted by setting that comment on them, and moving membership to another
+store re-marks them first ([operations.md](../operations.md#moving-membership-to-another-store)); two clusters sharing
+one database and schema are not supported; a membership store on another provider defines its own mark before that
+provider ships (roadmap P2, P3); the
 owner has `CREATE` on the schema and owns the tables; none is a superuser; (2) `CREATE SCHEMA IF NOT EXISTS <schema> AUTHORIZATION <owner>` (for `public`, `GRANT CREATE, USAGE` to
 the owner); (3) when the schema is not `public`, `ALTER SCHEMA <schema> OWNER TO <owner>` (`CREATE SCHEMA IF NOT EXISTS`
 leaves an existing schema's owner as it was, so after a cluster rename the new roles could not use it until the old

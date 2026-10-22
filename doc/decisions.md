@@ -3250,7 +3250,7 @@ Replaced by ADR-098.
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
   `StoppedAskingCountedFromStore`) and BenchmarkDotNet's ask throughput per root at a store latency of 1 and 5 ms.
 
-## ADR-101 `Strict` on PostgreSQL: synchronous replication, quorum-aware failover; durability, not visibility, releases
+## ADR-101 `Strict` on PostgreSQL: synchronous replication, safe failover; durability, not visibility, releases
 - Context: a root's held output (replies, sends, pushes of a `Commit` item) leaves only once its write is durable, and
   on a `Strict` store (ADR-104) a failover must never lose a write whose effects already left. With asynchronous
   replication a promoted standby misses the primary's last commits. Synchronous replication alone does not close it:
@@ -3280,10 +3280,17 @@ Replaced by ADR-098.
     membership writes pause rather than degrade (lease reads still answer, so nothing freezes; heartbeats skip and
     deaths wait; `DaServerStoreWritesBehind` and `DaServerMembershipWritePending`, the stated E3 exception). The self-check reads the
     replication settings and `pg_stat_replication` and declares `Strict` only when they match and the deployment states
-    such failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it publishes: a
+    such failover (`DaServer:Store:PostgreSql:SafeFailover`, which `DaServer.Aspire` sets for what it publishes: a
     primary and two standbys under `ANY 1`, on Kubernetes in three zones with quorum-aware failover, so maintenance on
     one standby pauses nothing (the samples add a PodDisruptionBudget through the publisher hook), on Docker Compose on
-    one host with manual promotion only, no Patroni or etcd, its host's loss not covered). `pg_stat_replication` shows `state` and `sync_state` only to
+    one host with manual promotion only, no Patroni or etcd, its host's loss not covered: the standbys stream as a
+    `<prefix>_replication` role under the application names `postgres_a` and `postgres_b`, which
+    `synchronous_standby_names` names unquoted, the primary is the published `DaServer:Store:PostgreSql:ComposePrimary`
+    that all three entrypoints obey, and the nodes reach it through one multi-host read-write connection string; the
+    promotion procedure compares `greatest(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())`, since a standby
+    restarted after the primary's loss reports only the segment it would stream from, and sets
+    `synchronous_standby_names` on the chosen standby before promoting it). The flag was `QuorumFailover`; it is
+    `SafeFailover` because manual-only promotion meets the same rule. `pg_stat_replication` shows `state` and `sync_state` only to
     members of `pg_read_all_stats`, which would also show every session's query text on the server, so the roles step
     grants it to the owner role alone and creates a `SECURITY DEFINER` function owned by it, `daserver_replication()`,
     in the configured schema of every database the cluster's stores use, with `search_path` fixed to `pg_catalog,
@@ -3522,11 +3529,14 @@ Replaced by ADR-098.
   sets `DOTNET_ENVIRONMENT=Development` on nodes and the Dashboard in run mode unless the AppHost sets one, never in
   what it publishes; test `AspireRunModeIsDevelopment`); every other environment is production, a plain `dotnet run` included (test
   `ProductionIsAnyNonDevelopmentEnvironment`). R13
-  holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback; below it the guarantee is
+  holds per class: on `Strict` unchanged, no acknowledged write lost and no rollback across the loss of any one
+  database instance and any failover the store performs, the deployment's failure domain bounding it (three zones on
+  Kubernetes; one host on Docker Compose, whose loss is not covered and which the start-up log line names); below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
-  framework promises no detection of the loss and reports only what it meets (below); the node logs at start the class it runs and that it accepted it.
+  framework promises no detection of the loss and reports only what it meets (below); the node logs at start the class it runs, that it accepted it, and, on `Strict`, the deployment's failure domain
+  (a one-host Compose database says the host's loss is not covered).
   A root that writes again and finds its own token at an older generation is fenced, reloaded and counted
   (`daserver.store.regressions`, not alerted), so a loss is never mistaken for a race and written over; that reports
   what it meets and promises no coverage. A setting that can corrupt rather than lose writes (PostgreSQL's `fsync` or

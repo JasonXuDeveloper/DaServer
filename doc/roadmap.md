@@ -339,10 +339,10 @@ Keep this file current: tick items when done, add items when scope changes.
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables` (the schema, when not `public`, then the tables and the function), `RolesStepUpdatesPassword`,
         `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles through `daserver_replication()`, only the owner
         holding `pg_read_all_stats`; the function's `search_path` is fixed, so a caller's objects never run with the
-        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store database and schema: one cluster's second store database converges, another cluster's membership database, another schema or an unmarked role is refused, naming `RolePrefix`)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
+        owner's rights, and `PUBLIC` cannot execute it), `RolePrefixUniquePerServer` (roles marked in the transaction that creates them, by `COMMENT ON ROLE`, with the cluster's membership store server (`system_identifier`), database and schema: one cluster's second store database converges, another cluster's membership database on this server or another, another schema or an unmarked role is refused, naming `RolePrefix`; after a membership move, roles re-marked as operations.md says converge)); `PublishRefusesStorelessRecords` (`aspire publish` fails when any node's records or Dashboard
         would use the in-memory store); `AspireRunModeIsDevelopment` (run mode sets `DOTNET_ENVIRONMENT=Development`
         unless the AppHost sets one; publish never does); the
-        self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
+        self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:SafeFailover`;
         in every class `fsync` or `full_page_writes` `off` making the class `Unsafe`, read on every new connection and
         every 10 s: a fresh start on it stays not ready before the membership join (`UnsafeAtStartStaysNotReady`), one
         finding it while serving, or a hot restart's standby, refuses nothing, goes on under the `Local` rules and raises
@@ -1022,8 +1022,12 @@ Keep this file current: tick items when done, add items when scope changes.
       `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
       `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`, `ComposePublishesStrictDatabase`
-      (the Compose file's primary and two standbys read `quorum` and the nodes start `Strict`), `ComposeManualPromotionKeepsAcknowledgedCommits`
-      (operations.md's procedure promotes the standby holding every acknowledged commit).
+      (the Compose file's primary and two standbys, streaming as `<prefix>_replication` under the application names
+      `postgres_a` and `postgres_b`, read `quorum` and the nodes start `Strict`), `ComposeManualPromotionKeepsAcknowledgedCommits`
+      (operations.md's procedure promotes the standby holding every acknowledged commit, including when that standby
+      restarted after the primary was lost and its receive position no longer shows what it holds),
+      `ComposePrimaryParameterSurvivesRepublish` (after a promotion and `ComposePrimary` set, a new `aspire publish`
+      and deploy keep the promoted primary, and a server off its timeline refuses to start).
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new
