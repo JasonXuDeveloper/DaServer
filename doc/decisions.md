@@ -2786,11 +2786,12 @@ Replaced by ADR-098.
     `DaServer:Store:StatementBytes` of records (a root's record and row changes never split: its row changes go in as many
     row statements as they need in its write's transaction), a record at `DaServer:Store:MaxRecordBytes`, rows sorted; store-level errors (every SQLSTATE but
     `22xxx`, `23xxx`, `54xxx`: a timeout, a lock, a lost connection, a read-only primary, a revoked grant, a schema mismatch)
-    retry the same bytes with a backoff (1 s doubling to 1 min, the slot released between attempts; a write timed out before its
-    `COMMIT` is cancelled first, never once `COMMIT` is sent; the client deadline is `StatementTimeout` times the write's
-    statements, PostgreSQL returning a pipelined batch's results only at its Sync; `COMMIT` runs with `statement_timeout = 0`,
-    and a cancelled synchronous-replication wait or a connection lost after `COMMIT` is an unknown outcome that releases no
-    held output until a re-read finds the write), and a row-deterministic one bisects the write between roots to its one
+    retry the same bytes with a backoff (1 s doubling to 1 min, the slot released between attempts; a write is one
+    pipelined batch with its `COMMIT` inside and is never cancelled: the server's `statement_timeout` ends a data statement
+    (`57014`, which drives the halving), the client deadline is `StatementTimeout` times the write's data statements
+    (PostgreSQL returns a pipelined batch's results only at its Sync), and at that deadline the connection is closed and
+    the outcome is unknown; `COMMIT` runs with `statement_timeout = 0` and waits for the synchronous standby (ADR-101), and
+    an unknown outcome releases no held output until a confirming rewrite commits durably), and a row-deterministic one bisects the write between roots to its one
     bad root, ruled unwritable (`RecordUnwritable`, then retried alone outside the write slots, staying unwritable when that
     retry fails the same way) only when the rest landed, more than a quarter of a write of at least 8 roots failing
     that way meaning the store is failing, so one root never blocks a world's writes and a sick store never hides as
@@ -3179,7 +3180,7 @@ Replaced by ADR-098.
     each settle some root's ask, so roots asking each other always progress. No tag, no stopped system, no missed
     reaction. Growth past the cap comes only from those items, so it is alerted, not refused: written rows are
     bounded by the store, unwritten ones grow in memory while writes fail and land in one write when the store
-    returns (every write's client timeout is `statement_timeout` times its statement count). A full outage is bounded
+    returns (every write's client deadline is `statement_timeout` times its data statement count). A full outage is bounded
     by the isolation freeze (about `IsolationTimeout` times the ask rate); a data-only outage (membership reads still
     succeed, data writes fail) freezes nothing and grows until `DaServerStoreWritesBehind` (the oldest unsaved change
     past four `CheckpointInterval`s for 5 minutes) is acted on, the stated E3 exception; `DaServerOnceAskOld`, on the age of the oldest ask row not stopped per actor type (from the sweeping
@@ -3245,3 +3246,54 @@ Replaced by ADR-098.
   `QueuedOnceCountsTowardUnacked`, `ReactionsRunUnderBackPressure`, `AskRowSurvivesStashDestroy`, `OrphanReplyDroppedAckSent`, `PlainAskOfOnceIsDAS032`,
   `AskingEntitySurvivesReload`, `MutualOnceRootsProgress`, `MigrationCarriesPendingAskRows`,
   `StoppedAskingCountedFromStore`) and BenchmarkDotNet's ask throughput per root at a store latency of 1 and 5 ms.
+
+## ADR-101 Strict synchronous replication; durability, not visibility, releases held output
+- Context: a root's held output (replies, sends, pushes of a `Commit` item) leaves only once its write is durable, and
+  a failover must never lose a write whose effects already left. With asynchronous replication a promoted standby
+  misses the primary's last commits, so output already released describes state that no longer exists. Synchronous
+  replication alone does not close it: a cancelled or terminated synchronous-replication wait (a cancel, a lost
+  connection, `statement_timeout` or `transaction_timeout` firing during `COMMIT`) leaves the commit visible on the
+  primary before any standby has it (checked on PostgreSQL 16: a terminated wait made the write visible with the
+  standby down). So a re-read that finds the write proves visibility, not durability; and a read, an xid-only
+  transaction or a compare-and-set that updates 0 rows writes no WAL and never waits for the standby, so it proves
+  nothing either.
+- Decision:
+  - **Production stores replicate synchronously and strictly**: `synchronous_commit` `on` or `remote_apply`, at least
+    one synchronous standby (`synchronous_standby_names = 'ANY 1 (…)'`), failover promotes only a synchronous standby
+    (Patroni `synchronous_mode: true` with `synchronous_mode_strict: true`, CloudNativePG `postgresql.synchronous` with
+    `dataDurability: required`, the managed equivalents), and with no synchronous standby writes pause rather than
+    degrade to asynchronous: a data-only outage (`DaServerStoreWritesBehind`, the stated E3 exception). What
+    `DaServer.Aspire` publishes is a primary and one synchronous standby; a single-node development store (the local
+    `aspire run`) is exempt.
+  - **All three data sources connect only to the primary**: the runtime's, membership's and the Dashboard's connection
+    strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
+    endpoint, so a demoted node is never written to.
+  - **A write is never cancelled**: one pipelined batch with its `COMMIT` inside; `SET LOCAL statement_timeout = 0`
+    before `COMMIT`, and the runtime and membership roles carry `transaction_timeout = 0` (PostgreSQL 17 and later), so
+    nothing the server times ends a synchronous wait; the server's `statement_timeout` ends a data statement (`57014`,
+    which drives the write halving); the client deadline is `StatementTimeout` times the write's data statements,
+    `COMMIT` excluded, and at it the connection is closed (never a CancelRequest) and the outcome is unknown.
+  - **Durability confirms release**: after any unknown outcome the root runs a confirming write, its record rewritten
+    under a new write generation (a real `UPDATE` compared on the epoch, which writes WAL and waits for the standby);
+    held output is released only when that `COMMIT` returns without the cancelled-wait warning. If the compare finds
+    the earlier write absent, the same bytes are written again; a confirmation that ends unknown is confirmed again.
+    The ordinary retry that reads its write back as landed takes the same confirming write before it releases.
+  - **Membership writes commit the same way**: the confirming write is the version row's next compare-and-set; a
+    membership version read lower than the last one seen (a failover that lost an asynchronous tail on a store not
+    meeting this rule) is adopted and logged (`MembershipVersionRegressed`), never treated as an error loop.
+  - Solo retries (timing-out and unwritable roots alike) run at most `WritesInFlight` per world at once, so after an
+    outage they never crowd claims and page-ins out of the runtime pool.
+- Alternatives:
+  - Asynchronous replication with a stated loss bound: released output (a granted item, a paid order's reply) would
+    outlive the state it describes after a failover; no bound makes that acceptable for value.
+  - Releasing on visibility (a re-read finds the write): a cancelled synchronous wait makes a write visible that a
+    failover then loses.
+  - Cancelling a timed-out write before `COMMIT`: a cancel races `COMMIT` in a pipelined batch, and once `COMMIT` is
+    in the batch a cancel that lands in the synchronous wait is exactly the visible-not-durable case.
+  - Degrading to asynchronous when the standby is gone (Patroni's non-strict mode): keeps writes flowing by giving up
+    the guarantee silently.
+- Consequences: architecture.md section 2 and deployment.md's Database row state it, requirements state it
+  (production store replication), roadmap W6 and W12 build it (tests `SyncWaitCancelledReleasesOnlyAfterConfirm`, the
+  primary up and the standby down; `RetriedWriteConfirmedBeforeRelease`; `MembershipVersionRegressionAfterFailoverAdopted`;
+  `SoloRetriesCappedPerWorld`; `DataSourcesRequireReadWrite`), and a commit's latency includes one round trip to the
+  standby.

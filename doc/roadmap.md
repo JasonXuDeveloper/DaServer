@@ -293,7 +293,8 @@ Keep this file current: tick items when done, add items when scope changes.
       and 5; ADR-068, ADR-082, ADR-084, ADR-097, ADR-098):
       - membership and fencing: the membership table (Orleans' protocol, architecture.md section 4): the feature point
         `IMembershipTable` with the PostgreSQL implementation (`daserver_members`, `daserver_membership`, versioned CAS
-        transactions, created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
+        transactions committed as data writes are (ADR-101), a lower version read after a failover adopted and logged:
+        `MembershipVersionRegressionAfterFailoverAdopted`, created by the schema mode) and the in-memory one (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
         `Active`), probes on a ring, indirect probes, suspicion votes and death declarations, the table refresh and
         snapshot push, a node reading itself `Dead` stopping, the isolation lease (from the read's issue, on the boot-time clock, checked by every shard before
@@ -318,12 +319,16 @@ Keep this file current: tick items when done, add items when scope changes.
         write-generation CAS, `WriteNow` and `DaServer:CheckpointInterval` (staggered by the key's hash, oldest unsaved
         first, a quarter of each round kept for checkpoints), `DaServer:Store:WritesInFlight`, writes capped by
         `Store:StatementBytes` of records and records by `Store:MaxRecordBytes`, rows sorted, store-level errors (every SQLSTATE but `22xxx`, `23xxx`,
-        `54xxx`) retried with a backoff (a write timed out before `COMMIT` cancelled first; the client deadline `StatementTimeout`
-        times the statements, no progress deadline: `ManyStatementWriteNotCancelled`; a half-open connection found by
-        `client_connection_check_interval` and keepalive: `HalfOpenWriteEndsAtScaledDeadline`; `COMMIT` with
-        `statement_timeout = 0`, never cancelled once sent, a cancelled synchronous-replication wait an unknown outcome:
-        `SyncReplicationCancelDoesNotRelease`), row-deterministic ones
-        bisected to the bad root, ruled unwritable only when the rest landed and then retried alone outside the slots, more
+        `54xxx`) retried with a backoff (ADR-101: a write is one pipelined batch with its `COMMIT` inside and never
+        cancelled, `57014` driving the halving; the client deadline `StatementTimeout` times the data statements, `COMMIT`
+        excluded, no progress deadline, the connection closed at it and the outcome unknown: `ManyStatementWriteNotCancelled`;
+        a half-open connection found by `client_connection_check_interval` and keepalive: `HalfOpenWriteEndsAtScaledDeadline`;
+        `COMMIT` with `statement_timeout = 0` and the roles' `transaction_timeout = 0`; an unknown outcome, and a retry that
+        reads its write back, released only after a confirming rewrite under a new write generation commits without the
+        cancelled-wait warning: `SyncWaitCancelledReleasesOnlyAfterConfirm`, `RetriedWriteConfirmedBeforeRelease`; the three
+        data sources on `Target Session Attributes=read-write`: `DataSourcesRequireReadWrite`), row-deterministic ones
+        bisected to the bad root, ruled unwritable only when the rest landed and then retried alone outside the slots (solo
+        retries at most `WritesInFlight` per world: `SoloRetriesCappedPerWorld`), more
         than a quarter of a write of at least 8 roots failing that way treated as a store failure
         (`StoreLevelErrorsNeverRuleUnwritable`, `UnwritableRootRetriedAlone`, `SingleRootWriteRuledUnwritable`,
         `UnwritableAloneRetryStaysUnwritable`), indexes on live tables built `CONCURRENTLY` as top-level statements under a
@@ -923,7 +928,10 @@ Keep this file current: tick items when done, add items when scope changes.
       schema-qualified), nodes on a DML-only role (the actor and membership tables), every node group given the store's
       connection (gateways included: membership is there), the samples' role-init step before the schema Job (on
       Kubernetes the schema Job retries until the role exists), the Compose deploy order (`up -d --wait postgres`, then
-      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook;
+      `up --no-deps --force-recreate --exit-code-from schema schema`), no Helm hook; the published PostgreSQL a primary and
+      one synchronous standby replicating strictly (ADR-101: `synchronous_commit = on`, `ANY 1 (…)`, writes pause without
+      a standby; the local `aspire run` single node exempt), the roles step setting `transaction_timeout = 0` and
+      `client_connection_check_interval`, `Target Session Attributes=read-write` on every data source DA wires;
       the upgrade check a plain Job started by the deploy step (N9); load generators (`bots`, `crowd`) as Jobs or left
       out of publish (Compose `profiles`); `DOTNET_PROCESSOR_COUNT` from `requests.cpu`; startup probes and 2 s probe
       timeouts; no service-account token on node pods; non-root, read-only root filesystem (writable `/tmp` and the
@@ -939,7 +947,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `RotationWaitsForFingerprintOnEveryNode`, `RejectEmptyKeyOnReload`, `NetworkPolicyAdmitsDashboard`,
       `NetworkPolicyAdmitsReferencingResources`, `NetworkPolicyAdmitsRoleInitToStore`, `ComposeDeployWaitsForPostgresThenSchemaExitCode`
       (a failing schema stops the deploy), `SchemaJobRetriesUntilRoleExists`, `GatewayPodsReachStore`,
-      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`.
+      `ComposeSecretReadableByNode`, `LaunchdThrottleIntervalOne`, `PublishedStoreReplicatesSynchronously`.
 14. N9 hot restart's remaining operator side, on W's model (draft §10; ADR-084, ADR-098), after W12 and before W10: the
     `{cluster}-upgrade-check` Job and `aspire deploy` step, a plain Job that calls a running node's dry-run arm
     (`/admin/restart?dryRun=true` with the new manifest, `ManifestDiff`), including the rollback-safety check (a release whose new
