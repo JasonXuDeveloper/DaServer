@@ -637,15 +637,16 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
   ];
   // The store's provider and its effective durability class for records, membership and the Dashboard's own store:
-  // Strict, a lower class the deployment accepted (?durability=replicated shows one), or Unsafe, writes refused until an
-  // unsafe setting is fixed (?durability=unsafe), said in words since an operator may not know the names
+  // Strict, a lower class the deployment accepted (?durability=replicated shows one), or Unsafe: a setting that can
+  // corrupt the database (?durability=unsafe), while writes go on as Local; said in words since an operator may not
+  // know the names, and DaServerStoreUnsafe, critical, leads the other incidents
   var DUR_LOW = /[?&]durability=replicated/.test(location.search);
   var DUR_UNSAFE = /[?&]durability=unsafe/.test(location.search);
   // the line under the store's running head: the class, then the errors while there are none; a lower class takes
   // the whole line, since what it may lose matters more than a count of nothing
   // (the store's own screen names the provider in its eyebrow already)
   function durText(own) {
-    var t = DUR_UNSAFE ? 'writes refused: fsync is off on the database; turn it back on and writes resume'
+    var t = DUR_UNSAFE ? 'fsync is off on the database: a crash may corrupt it; turn it back on (writes go on meanwhile)'
       : DUR_LOW ? 'records Replicated by choice: a failover may lose the last writes'
       : 'Strict for records, membership and this Dashboard; no errors in the last hour';
     return own ? t.charAt(0).toUpperCase() + t.slice(1) : 'PostgreSQL, ' + t;
@@ -811,7 +812,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
 
   // ---------- screens: units placed on the page's 10 columns ----------
-  var SAY = { DaServerGcPauses: 'long GC pauses', DaServerAskLatencyHigh: 'slow asks' };
+  var SAY = { DaServerGcPauses: 'long GC pauses', DaServerAskLatencyHigh: 'slow asks', DaServerStoreUnsafe: 'fsync off on the database' };
   function incEb() {
     var i = incidents()[0];
     return 'Firing since ' + hhmm(i.since) + ' on ' + group(i.nodes) + ' of ' + group(MAP.n) + ' nodes' + (i.silenced ? '; silenced until ' + hhmm(i.silenced) : '');
@@ -828,8 +829,9 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
   }
   function moreIncidents() {
     var a = incidents().slice(1).filter(function (i) { return !i.silenced; });
-    if (!a.length) return 'Everything else is within its usual range.';
-    return (a.length === 1 ? 'One more incident: ' : a.length + ' more incidents, the first: ') + (SAY[a[0].alert] || a[0].alert) + ' on ' + group(a[0].nodes) + ' ' + a[0].type + ' nodes.';
+    var rest = !a.length ? 'Everything else is within its usual range.' : (a.length === 1 ? 'One more incident: ' : a.length + ' more incidents, the first: ') + (SAY[a[0].alert] || a[0].alert) + ' on ' + group(a[0].nodes) + ' ' + a[0].type + ' nodes.';
+    // the store's own alert has no server type, so it is said first here rather than ranked against the types' incidents
+    return DUR_UNSAFE ? 'Critical: DaServerStoreUnsafe, ' + SAY.DaServerStoreUnsafe + ' (a crash may corrupt it). ' + rest : rest;
   }
   // A type's rollback, from what the nodes run: the action is the server's, the progress is membership's
   function rbLabel(t, short1) {
