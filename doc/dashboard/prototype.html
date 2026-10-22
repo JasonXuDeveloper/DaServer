@@ -637,7 +637,7 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     [Date.UTC(2026, 9, 20, 17, 7, 2) / 1000, 'Release pipeline', 'Rollout', 'ChatServer to ' + BUILD, 'Done', '7f2a']
   ];
   // The store's provider and its effective durability class for records, membership and the Dashboard's own store:
-  // Strict (membership always), a lower class the deployment accepted for records or the Dashboard's store
+  // Strict (required for membership; a drop still shows the effective class), a lower class the deployment accepted for records or the Dashboard's store
   // (?durability=replicated shows one), or Unsafe: a setting that can
   // corrupt the database (?durability=unsafe), while writes go on under the Local rules; said in words since an operator may not
   // know the names, and DaServerStoreUnsafe, critical, leads the other incidents
