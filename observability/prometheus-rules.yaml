@@ -299,7 +299,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} has changes unwritten for {{ $value | humanizeDuration }}"
-          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check what the store's writes wait for first (PostgreSQL: its synchronous standbys, pg_stat_replication.sync_state: with no standby in 'quorum' or 'sync' every COMMIT waits; Redis or Valkey: its replicas, WAITAOF), then its locks, disk and errors (daserver.store.writes_waiting)."
+          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check what the store's writes wait for first (PostgreSQL: where the store has synchronous standbys, the Kubernetes shape, check them as a superuser or with the high-availability tool, patronictl list or kubectl cnpg status: with none up every COMMIT waits; Redis or Valkey: its replicas, WAITAOF), then its locks, disk and errors (daserver.store.writes_waiting)."
           daserver_limit: "120"
           daserver_unit: "s"
 
