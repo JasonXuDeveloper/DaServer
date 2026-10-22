@@ -650,7 +650,8 @@ h1{font:500 var(--h1)/1.2 var(--display);margin:0;letter-spacing:-.005em;white-s
     // the setting's name never starts the line, so capitalising the first letter never makes it "Fsync"
     var t = DUR_UNSAFE ? 'on the database, fsync or full_page_writes is off: a crash may corrupt it; turn it back on (writes go on meanwhile)'
       : DUR_LOW ? 'records Replicated by choice: a failover may lose the last writes'
-      : 'Strict for records, membership and this Dashboard; no errors in the last hour';
+      // Strict names its failure domain (the class gauge's failure_domain label): this cluster runs on three zones
+      : 'Strict across three zones for records, membership and this Dashboard; no errors in the last hour';
     return own ? t.charAt(0).toUpperCase() + t.slice(1) : 'PostgreSQL, ' + t;
   }
   var STORE = { p99: '4.2 ms', usual: '4.0 ms', inflight: '1,840', cap: 'of 5,040 allowed', unsaved: '18,204', oldest: '9 s',
