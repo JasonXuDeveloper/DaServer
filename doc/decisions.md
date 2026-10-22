@@ -187,7 +187,7 @@ Replaced by ADR-081.
 - Context: a node needs a host (configuration, logging, shutdown, the HTTP plane). Orleans (`UseOrleans`) and Aspire
   (`AddServiceDefaults`, `AddNpgsqlDataSource`) put this in a short `Program.cs`, one line per capability.
 - Decision: a node project has a `Program.cs` of five lines: `WebApplication.CreateBuilder`, `AddDaServer`, `Build`,
-  `MapDaServer`, `Run`. A capability is one more line (`AddPostgreSqlActorStore("actors")`). No entry point is
+  `MapDaServer`, `Run`. A capability is one more line (`AddPostgreSqlStore()`). No entry point is
   generated, and no capability turns on just because a package is referenced.
 - Alternatives: a generated entry point when the project has none. It saves five lines, but a node then has no visible
   place to add a store, an endpoint or a service, debugging has no start, and capabilities would have to turn on by
@@ -1088,7 +1088,7 @@ Replaced by ADR-081.
     and skips unknown type ids, counted. Transient data is rebuilt on activation. Relational and queried data
     (accounts, payments, mail, rankings) stays in services with the user's ORM.
   - **The record:** one record key per actor, `r|type|key`, so equal keys of two actor types (`Map(7)`, `Loot(7)`) are
-    two records, written through the store contract (ADR-102). Its value is a header (epoch, owner, placement version,
+    two records, written through the store contract (ADR-102). Its value is a header (epoch, owner, activation count, placement version,
     write generation, the `[Once]` seed, `NextDue`, the ask census fields) and the body; its version is the activation's
     fencing token and write generation. The actor key is any unmanaged struct of at most 16 bytes, its fields written
     in order, each big-endian at its own width, behind a length, so one encoding holds every shape and byte order is
@@ -1660,7 +1660,7 @@ Replaced by ADR-081.
       with the migration bytes, "not here" or "postponed" (it keeps the actor and the mail is forwarded to it), so a
       claim never races a live source and the placement version decides only after a source has left;
     - a root's record writes never overlap in one process (the next waits for the one in flight), and every write
-      compares the record's version, its fencing token (epoch, owner name and generation) with the root's write
+      compares the record's version, its fencing token (epoch, owner name and generation, activation count) with the root's write
       generation (every epoch claim resets it to 0, an in-place hot restart continues it from the handover), so a
       write that lands late never overwrites newer state; a failed write is retried with the same bytes and generation,
       and a retry that finds its own version counts as written once `Confirm` shows it (ADR-102); the epoch rises with
@@ -2159,7 +2159,9 @@ Replaced by ADR-098.
     moved to another table during a round is missed once); the receiving node checks that buffer at
     dispatch and answers a stale delivery with `NotSubscribed`, so a lost `Unsubscribe` is pruned at the next publish.
     Delivery is at most once and never activates an actor; `[Stateless]` actor types, `Connection` and actor types whose root
-    is not saved cannot subscribe (DAS023): Topics needs the subscriber's epoch and a saved `Subscription` on its root. It replaces today's `Publish`; durable streams (replay, offsets, consumer groups) stay with Kafka or NATS
+    is not saved cannot subscribe (DAS023): renewal needs a saved `Subscription` on the subscriber's root. The table keys a
+    subscriber by its activation stamp (placement version, node generation, activation count), which every activation
+    has and no store rollback hands out twice. It replaces today's `Publish`; durable streams (replay, offsets, consumer groups) stay with Kafka or NATS
     JetStream.
   - **Non-.NET clients**: the client wire protocol is published as a specification (frames, handshake, `Ready`,
     re-join and slots, `Retire` and `HandedOff`, `Busy` with its retry-after, keep-alive), with the C# SDK as the
@@ -2387,8 +2389,9 @@ Replaced by ADR-098.
       on the whole cluster (a config push) takes the sentinel type `*cluster`. The two exclude each other: a config push is refused while any type holds a lock (naming
       the type, its action and, when Stalled, Mark failed), and a type's action is refused while `*cluster` is held,
       since a standby that read the old table could take over a node after a push (the handover also carries the table
-      version). The lock is a key per type in the Dashboard's store, put only when absent and held until its action is
-      Done or Failed; after taking its key a type's action reads `*cluster`'s and a config push scans every type's, and
+      version). The lock is a key per type in the Dashboard's store, put only when absent once the action's own key
+      (Requested, with its lease) has landed, and held until its action is Done or Failed; a refused lock makes the
+      action Failed, and a lock whose action key is absent is free, so a crash between the two writes never locks a type; after taking its key a type's action reads `*cluster`'s and a config push scans every type's, and
       one that finds the other gives its key back and is refused, so two that race may both be refused but never both
       run. The action's key carries a lease of three cadences on the store's clock, renewed on a timer of its own
       (never in the poll loop, so a slow refresh cannot let it lapse); every renewal and state write is a put compared
@@ -3266,8 +3269,14 @@ Replaced by ADR-098.
     replication settings and `pg_stat_replication` and declares `Strict` only when they match and the deployment states
     quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it
     publishes: a primary and two standbys in three zones, so maintenance on one standby pauses nothing; the samples add
-    a PodDisruptionBudget through the publisher hook). The local single-node database is `Local` and exempt. The
-    minimum is PostgreSQL 16.
+    a PodDisruptionBudget through the publisher hook). `pg_stat_replication` shows `state` and `sync_state` only to
+    members of `pg_read_all_stats`, so the roles step grants it to the runtime and membership roles (without it a
+    production node never sees `Strict`). The local single-node database is `Local` and exempt. The minimum is
+    PostgreSQL 16.
+  - **`Term` is `(system_identifier, timeline)`**, read when a connection opens: a promotion moves the primary to a
+    new timeline and breaks every connection, so every outcome after a failover carries the new term (the current WAL
+    file name's timeline, not `pg_control_checkpoint()`'s, which lags until the first checkpoint after promotion).
+    One partition.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3347,14 +3356,20 @@ Replaced by ADR-098.
     store's `Now`; conditional `Put` and `Delete`; `GuardedWrite` (one conditional head and dependents that apply
     exactly with it, required of certified providers: PostgreSQL has it as a transaction, Redis as a function call in
     one hash slot, MongoDB as a transaction or one document); ordered, non-atomic batches; `Confirm`; and the store's
-    `Durability`, `SelfCheck`, `Term`, `MaxValueBytes` and `Migrate` (architecture.md section 4).
+    `Durability`, `SelfCheck`, `Term`, `Partition`, `MaxValueBytes` and `Migrate` (architecture.md section 4). `Get` is
+    linearizable and may read only a value's first bytes (a record's header, at most `DaServer:Store:HeaderBytes`);
+    `Scan` stops at a key count or at `DaServer:Store:ScanBytes` of values; a put may also be unconditional (an upsert,
+    for index entries and heartbeats); every outcome carries the `(partition, term)` it reached.
   - **One outcome model**: `Landed`, `AlreadyLanded`, `NotApplied`, `RowDeterministic`, `StoreLevel`, `Unknown`; a
-    provider answers `Unknown` whenever a request may have been applied, never `StoreLevel`. The runtime acts on
-    these, never on a store's error codes.
+    provider answers `Unknown` whenever a request may have been applied, never `StoreLevel`, and rereads a race before
+    it answers `NotApplied`. The runtime acts on these, never on a store's error codes; a `NotApplied` or `Confirm`
+    showing the root's own token at a generation below its last landed one is a store rollback (one process never
+    overlaps two writes of a root), handled as the rollback audit's finding (ADR-104), never written over.
   - **The framework owns every protocol, once**: claims (a `Get`, then a put compared on the stored version), fencing
     (a record's version is its fencing token and write generation, ADR-105), tombstones, the due index and the ask
-    index as keys (hints that never miss a key: written ahead of their record, stale ones deleted compared on their
-    versions), `[Once]` and ask rows as keys under their root, deletion, expiry (one paged walk, every deletion compared
+    index as keys (hints that never miss a key: written ahead of their record and kept with it when a batch is halved,
+    each naming the record version it precedes, and deleted compared on their own version only once the record's
+    header is at or above that version and disagrees), `[Once]` and ask rows as keys under their root, deletion, expiry (one paged walk, every deletion compared
     on the version read), the ask census, membership (ADR-103), the rollback audit (ADR-104) and the Dashboard's
     actions, type locks, idempotency keys, audit and key ring (ADR-093: puts only when absent and puts compared on the
     version read; its own `IStore` registration, by default on membership's database), so no part of DaServer needs a
@@ -3388,7 +3403,7 @@ Replaced by ADR-098.
   key; values are opaque, so operators inspect them through the Dashboard rather than SQL; sweeps are paged scans.
   architecture.md section 4 states the contract, the framework's use of it and the providers; roadmap W6 builds it
   (kit layers 1 to 5, the BenchmarkDotNet gate, tests `LargeRootWriteStaysAtomic`, `DueEntryNeverLostToCleanup`,
-  `ProbeAnswerRecordFirst`, `ExpiryNeverDeletesNewerVersion`).
+  `ProbeAnswerRecordFirst`, `ExpiryNeverDeletesNewerVersion`, `OwnOlderVersionIsRollback`).
 
 ## ADR-103 Membership is one versioned document through the store contract
 - Context: membership (ADR-082) needs a total order of versions, a compare-and-set, atomic snapshot reads, heartbeats
@@ -3399,7 +3414,13 @@ Replaced by ADR-098.
 - Decision: one framework-owned protocol over one document per cluster (`m|cluster`: the version, every member's entry,
   the slot table, the placement and configuration versions; tens of KB for hundreds of members and 4,096 slots),
   written by a conditional put of the whole document; heartbeats are keys of their own, each written only by its
-  member. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
+  member. The re-placement write moves each `Dead` entry out of the document into a key of its own under the
+  document's prefix (a dependent of the same guarded write), so churn never grows it; its size is exported and
+  alerted above half the provider's `MaxValueBytes`, and a change that would exceed it is refused and logged. A
+  version lower than one the node held (a store below `Strict` rolled back) is adopted, and the document is written
+  above the highest held with every type's placement version raised to the new table version before any claim, so no
+  record or activation stamp from the lost history outranks the new placement; a claim that reads a stored placement
+  version above its own table version raises the document above it the same way first. A read is one `Get`, so a snapshot is atomic; the store's `Now` comes back with it and is never earlier than
   a write the read shows, which `dead_seen_at` relies on (the coordinator stamps the `Now` of its first read that
   showed the death). Membership uses its own store client, may point at a store instance of its own
   (`WithMembershipStore`) and requires an effective class of `Strict` unless `DaServer:Membership:AcceptDurability`
@@ -3414,7 +3435,8 @@ Replaced by ADR-098.
   - A built-in Raft: the highest cost, and what R5 chose Orleans' table to avoid.
 - Consequences: one membership implementation, tested by the kit against every provider; a store outage still pauses
   the whole cluster (R5), unless membership points at a separate `Strict` instance; a change rewrites the whole
-  document, negligible at membership's rate. architecture.md section 4 states it.
+  document, negligible at membership's rate. architecture.md section 4 states it; tests
+  `MembershipDocumentBoundedUnderChurn`, `MembershipVersionRegressionAfterFailoverAdopted`.
 
 ## ADR-104 Durability classes: `Strict`, `Replicated`, `Local`
 - Context: R13 promised that released output survives every failover, which only a `Strict` store keeps (ADR-101). Many
@@ -3423,20 +3445,23 @@ Replaced by ADR-098.
   all contradicts the owner's direction; accepting them silently gives up the guarantee without saying so.
 - Decision: a provider declares its class, its start-up self-check may lower it, and the effective class is the lower
   of the two, logged, exported (`daserver.store.durability_class`) and shown on the Dashboard. A production node
-  refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store) or
-  `DaServer:Membership:AcceptDurability` (membership) names the class; development and `TestCluster` are exempt. R13
+  refuses to start below `Strict` unless `DaServer:Store:AcceptDurability` (actor store),
+  `DaServer:Membership:AcceptDurability` (membership) or `DaServer:Dashboard:AcceptDurability` names the class; development and `TestCluster` are exempt. R13
   holds per class: on `Strict` unchanged; below it, output leaves at the provider's wait, and a failover may roll back
   state whose effects already left, so `[Once]` and `AskUntilAnswered` hold except across such a rollback and value
   flows keep their reconciliation. In every class the version is the fencing token, so two owners' writes never mix,
-  and the **rollback audit** (every outcome carries the store's `Term`; on a change each world `Confirm`s its active
-  persisted roots and fences, reloads and reports any found behind its last landed write, `daserver.store.rollbacks`,
-  `DaServerStoreRolledBack`) makes a rollback of an active actor visible.
+  and the **rollback audit** (every outcome carries the `(partition, term)` it reached; on a partition's term change
+  each world `Confirm`s its active persisted roots in that partition, fences, reloads and reports any found behind its
+  last landed write, and puts its active roots' due and ask entries again; `daserver.store.rollbacks`,
+  `DaServerStoreRolledBack`) makes a rollback of an active actor visible. A write or `Confirm` that shows a root's own
+  token at an older generation is the same finding, so a rollback is never mistaken for a race and written over.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
   a replacement for stating it).
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; roots
   written and unloaded before a failover below `Strict` lose writes invisibly, which the documentation says. Tests
-  `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `RollbackAuditFindsActiveRoots`.
+  `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `RollbackAuditFindsActiveRoots`,
+  `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
@@ -3455,8 +3480,12 @@ Replaced by ADR-098.
     back after the expiry (a race) costs storage until the next pass, never safety: no attempt of that sender can run
     as new by then.
   - **Epochs are per key**, continued through the tombstone (the stored or the tombstone's epoch + 1), and the record's
-    version carries the owner's name and node generation with the epoch and write generation, so a rolled-back epoch
-    handed out again never lets two owners' writes match.
+    version carries the owner's name, node generation and activation count with the epoch and write generation, so a
+    rolled-back epoch handed out again, even to the same node, never lets two activations' writes match.
+  - **Ordering across activations needs no store**: every activation, saved or not, has an activation stamp
+    (placement version, node generation, the process's activation count, handed over by a hot restart), and every
+    later activation of a key has a larger one; `[Latest]` and topic subscriptions compare it, so an unsaved actor
+    type orders its activations too.
   - **A new incarnation's `[Once]` seed** is the larger of the creating claim's `Now` in milliseconds and the
     tombstone's seed + 1: within the tombstone's horizon the tombstone orders it, and past it the old seed is older
     than the horizon, far more than the clocks may disagree.
@@ -3467,4 +3496,4 @@ Replaced by ADR-098.
   activates again keeps a deleted sender's rows until the expiry reaches them (storage, not safety); the expiry reads
   each actor sender's key once per pass. ADR-099's forgetting rule, its deletion and its probe answers are stated in
   these terms; tests `TombstoneCarriesForget`, `ForgetCheckIgnoresRecreatedSender`, `ForgottenRowWrittenBackExpiresAgain`,
-  `EpochContinuedThroughTombstone`, `RolledBackEpochNeverMatchesOtherOwner`.
+  `EpochContinuedThroughTombstone`, `RolledBackEpochNeverMatchesOtherOwner`, `ActivationStampOrdersUnsavedReactivation`.

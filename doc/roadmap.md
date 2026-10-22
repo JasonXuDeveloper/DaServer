@@ -293,14 +293,18 @@ Keep this file current: tick items when done, add items when scope changes.
       and 5; ADR-068, ADR-082, ADR-084, ADR-097, ADR-098, ADR-101 to ADR-105):
       - the store contract (ADR-102; architecture.md section 4): `IStore` (ordered byte keys with writer-chosen
         versions, `Get` and `Scan` with `Now`, conditional `Put`/`Delete`, `GuardedWrite`, ordered batches, `Confirm`,
-        `Durability`, `SelfCheck`, `Term`, `MaxValueBytes`, `Migrate`) and its outcome model, the runtime acting on outcome
+        `Durability`, `SelfCheck`, `Term` per partition, `MaxValueBytes`, `Migrate`; `Get` and `Scan` reading headers only,
+        `Scan` bounded by `ScanBytes`; unconditional puts) and its outcome model, the runtime acting on outcome
         classes only; the key layout (records, ask rows, the queued-ask index, `OnceSenders` rows under their root; the due
-        and ask indexes as hints written ahead of their record and cleaned compared on their versions:
-        `DueEntryNeverLostToCleanup`); `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
+        and ask indexes as hints written ahead of their record, kept with it when a batch is halved, naming the record
+        version they precede and cleaned compared on their versions only once the header has reached it:
+        `DueEntryNeverLostToCleanup`); the activation stamp and the activation count in the record's version; `InMemoryStore` (behaves as `Strict`); the durability classes (ADR-104): the
         effective class the lower of the declaration and the self-check, `DaServer:Store:AcceptDurability` and
         `DaServer:Membership:AcceptDurability`, `daserver.store.durability_class`, the rollback audit on a `Term` change
+        per partition, and an own-token older version in `NotApplied` or `Confirm` treated as a rollback
         (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`,
-        `RollbackAuditFindsActiveRoots`, `RolledBackEpochNeverMatchesOtherOwner`); the conformance kit in
+        `RollbackAuditFindsActiveRoots`, `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`,
+        `RolledBackEpochNeverMatchesOtherOwner`, `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
         proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
       - the PostgreSQL provider (`DaServer.Persistence.PostgreSql`, `PostgreSqlStore`, `AddPostgreSqlStore`; PostgreSQL
@@ -316,8 +320,9 @@ Keep this file current: tick items when done, add items when scope changes.
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
         `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
-        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`); the self-check declaring `Strict`
-        only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`; the BenchmarkDotNet gate
+        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState`); the
+        self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
+        `Term` from the timeline (`TermChangesOnPromotion`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
@@ -325,7 +330,10 @@ Keep this file current: tick items when done, add items when scope changes.
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
         heartbeats as keys of their own, written only by their member; an `Unknown` write settled by `Confirm`; a lower
         version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
-        version held raised past before the next claim and the document re-read after a reconnect; one membership write in
+        version held raised past, with every type's placement version, before the next claim, a claim reading a higher
+        stored placement version raising past it (`StrandedPlacementRaisedPast`), and the document re-read after a
+        reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
+        (`MembershipDocumentBoundedUnderChurn`); one membership write in
         flight, heartbeats skipped while one is pending, its own store client with a connection kept for reads:
         `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before
@@ -642,8 +650,8 @@ Keep this file current: tick items when done, add items when scope changes.
       clients), `FixedReplyReservesExactSize`, `StallNeedsBracketGap` (a read that waited to
       start is no stall), `CoordinatorNeverRestarting`, `ArmRefusedWhileReplacementPending`,
       `MembershipRoleConnectionsReserved`, `ResizeBackThroughDashboard`, `RequestsReadFromCgroup`, `VpaTargetCappedAtLimit`,
-      `PartialReassemblyResentAfterHandover`, `LatestEpochIsClaimEpoch` (a crash before the next write cannot reuse an
-      epoch while the counter restarts), `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
+      `PartialReassemblyResentAfterHandover`, `ActivationStampOrdersUnsavedReactivation` (an unsaved sender re-activated after
+      a crash, its counter restarted, still wins: its activation stamp is larger), `HotRestartKeepsClientsConnected`, `FailedHandoverResumesInPlace`, `HeldGroupPushJoinsFrameOnRelease`, `HeldGroupPushDoesNotStallGroup`,
       `HeldOutputCapAnswersBusy`, `ExpiredHeldReplyDropped`, `HeldLatestReplaced`, `RepeatCommitWaitsForEarlierWrite`,
       `MigrationConvergesWhileRootCommitsEveryTick`, `OversizeRecordUnwritable`,
       `BatchBytesCapped`, `KeysSortedNoDeadlockWithStaleOwner`,
@@ -668,13 +676,13 @@ Keep this file current: tick items when done, add items when scope changes.
       `ReminderFiresOncePerUtcAtWithinActivation`, `RemindersArmedOnlyByRuntime`,
       `PeriodicReminderAdvancesInSameRecord`, `ReminderAfterOutageFiresOnce`; BenchmarkDotNet `DueScan` over 1M
       records, 0 B per firing.
-    - [ ] W6b `DaServer.Topics` (ADR-090, draft §15): the `Topic` actor type with its subscriber table and epochs, the
+    - [ ] W6b `DaServer.Topics` (ADR-090, draft §15): the `Topic` actor type with its subscriber table keyed by activation stamps, the
       one-way `Subscribe`/`Unsubscribe`/`Publish`/`NotSubscribed` package messages, `[Hosts<Topic>]` with a store, the
       subscriber's `Subscription` buffer and its renewal, the check at dispatch, one frame per subscriber node; deletes
       the service `Publish`. Tests: `PublishReachesSubscribersOnEveryNode`, `DeliveryNeverActivates`,
-      `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription` (an older epoch's
-      unsubscribe is ignored), `LowerEpochSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`,
-      `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinTwoRenewIntervals` (same epoch, reordered
+      `ResubscribesAfterActivation`, `GoneSubscriberPruned`, `StaleUnsubscribeKeepsNewSubscription` (an older stamp's
+      unsubscribe is ignored), `LowerStampSubscribeIgnored`, `SubscriptionRenewsAfterTopicCrash`,
+      `CancelledDeactivationResubscribes`, `ReorderedUnsubscribeHealsWithinTwoRenewIntervals` (same stamp, reordered
       during a Topic migration: a renewal restores it within two intervals), `LostUnsubscribeStopsDeliveryOnNextPublish`, `LostUnsubscribeThenMigrationStillPruned`, `ResubscribeInSameActivationSurvivesNotice`, `TopicDeliveryHandledOnSubscriberRoot`;
       BenchmarkDotNet fan-out to 1k/10k subscribers on 1/3 nodes, 0 B per delivery.
     - [ ] W7 Samples (mmo, flashsale) on the new model (their systems use `Mut<T>`), the mmo's drops split
@@ -822,6 +830,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `DeployWebhookCarriesExpectedBuild`, `ActionOutlivesBrowser`, `WebhookTimeoutIsUnknownNotRetried`,
       `TypeWideActionNeedsReason`, `AuditWritesIntentAndOutcome` (same action id, durable sink, entries never rewritten, an `Unknown` write confirmed before the call),
       `ClusterAndTypeLocksNeverBothHeld` (a type's action and a config push racing: both may be refused, never both run),
+      `LockWithoutActionIsFree` (a replica crashing between the action's key and the lock leaves no type locked),
       `DashboardHoldsNoSigningSecret` (only `{cluster}-admin` mounted), `ActionsNeedAntiforgeryToken`,
       `DataRenderedAsTextUnderCsp` (a log line holding markup shows as text), `MixedBuildsCountedAndComparedPerBuild`,
       `OutlierRuleTwoSidedWithNoRequests`, `TypeP99FromMergedBuckets`, `LokiQueriesOnePerTypeAndCached`,

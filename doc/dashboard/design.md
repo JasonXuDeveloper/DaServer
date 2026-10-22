@@ -424,8 +424,10 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   disables on its first press and enables again when the server refuses, so a "wait" can be retried without retyping.
 - **One at a time per server type.** Every action on a type takes the type's lock: a rollback, a hot restart, a
   rollout and a node's restart alike (a Resize does not, above: it is idempotent and per node). While one runs, the type's other actions wait, and their buttons say which action
-  is running. The lock is a key per type in the Dashboard's store (`x|cluster|lock|type`), put only when absent, so one
-  unfinished action holds a type; an action on the whole cluster (a config push) locks the sentinel type `*cluster`,
+  is running. The lock is a key per type in the Dashboard's store (`x|cluster|lock|type`), put only when absent and only after
+  the action's own key (Requested, with its lease) has landed, so one unfinished action holds a type; a refused lock
+  makes the action Failed, and a lock whose action key is absent is free, so a replica that crashes between the two
+  writes never leaves a type locked; an action on the whole cluster (a config push) locks the sentinel type `*cluster`,
   and the two kinds exclude each other: after taking its key, a type's action reads `*cluster`'s and a config push
   scans every type's, and one that finds the other gives its own key back and is refused. Two that race may both be
   refused, never both run ([architecture.md](../drafts/architecture.md#the-framework-over-the-contract)). A push refused behind a type names the type, its
@@ -446,7 +448,7 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   winner reconciles: it asks the deploy pipeline for the run carrying the action id and sets the action's state from it.
   A dispatch creates its run asynchronously, so "no run yet" is not Failed at once: the lookup keeps searching for the
   action id for an hour (a run created late, during a pipeline incident, still runs); a run found in that hour is
-  re-attached, and after it the action is Failed. Nothing follows a terminal row, so a run that appears later is stopped
+  re-attached, and after it the action is Failed. Nothing follows a terminal state, so a run that appears later is stopped
   by the pipeline itself: every dispatch carries `--action <id>`, and the rollout step's first
   step asks the Dashboard whether that action is still unfinished (`GET /admin/actions/{id}`, signed with the
   `{cluster}-admin` key the rollout Job already mounts; it reaches the Dashboard's in-cluster address, which DA gives
