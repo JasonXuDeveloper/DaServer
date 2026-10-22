@@ -284,8 +284,8 @@ groups:
 
       - alert: DaServerStoreWritesBehind
         # Target (roadmap W6): a node's oldest change not yet written is older than four CheckpointIntervals (30 s by
-        # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (a
-        # locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
+        # default) for 5 minutes. A full store outage freezes the worlds after IsolationTimeout; a data-only outage (no
+        # synchronous standby up, a locked table, a full disk: membership reads still succeed) freezes nothing, so unwritten changes and asks grow
         # in memory until this is acted on. The gauge leaves out roots ruled unwritable (DaServerRecordUnwritable), so
         # one oversized record never reads as a store that stopped; a root is ruled unwritable only for a row-deterministic
         # error (SQLSTATE 22xxx, 23xxx, 54xxx) while the rest of its write landed, so a read-only primary, a revoked
@@ -297,7 +297,7 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.node }} has changes unwritten for {{ $value | humanizeDuration }}"
-          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check the store's locks, disk and errors (daserver.store.writes_waiting)."
+          description: "The store does not take this node's writes. If membership still answers, nothing freezes and unwritten changes grow in memory; if it does not, the node is frozen too (daserver.membership.frozen). Check the store's synchronous standbys first (pg_stat_replication.sync_state: with no standby in 'quorum' or 'sync' every COMMIT waits), then its locks, disk and errors (daserver.store.writes_waiting)."
           daserver_limit: "120"
           daserver_unit: "s"
 
