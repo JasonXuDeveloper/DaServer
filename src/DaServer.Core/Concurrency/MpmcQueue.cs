@@ -136,14 +136,14 @@ internal sealed class MpmcQueue<T>
         }
     }
 
-    /// <summary>
-    /// Another thread is between taking a position and handing the slot over, two steps apart: spin, then yield the
-    /// core (never sleep a whole millisecond) so a preempted thread can finish.
-    /// </summary>
     /// <summary>A lost exchange: spin 2, 4, ... 64 times before the next try, so losers stop bouncing the cursor's line.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Contended(ref int attempts) => Thread.SpinWait(1 << Math.Min(++attempts, 6));
 
+    /// <summary>
+    /// Another thread is between taking a position and handing the slot over, two steps apart: spin, then yield the
+    /// core (never sleep a whole millisecond) so a preempted thread can finish.
+    /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void WaitForSlot(ref SpinWait spinner)
     {
