@@ -681,13 +681,14 @@ in short:
     once. Until
     then it hosts no slots and serves no clients. If a member does not answer, it does not become `Active` and retries
     (a node cut off from part of the cluster never joins it). The first node of a cluster creates the document, at
-    a version taken from the store's `Now` in milliseconds rather than 1, or `DaServer:Membership:InitialVersion` when
-    that is higher: versions move far slower than once a millisecond, so a new document (membership moved to another
-    store, or a cluster renamed: operations.md) starts above every placement version an earlier document stamped into
-    records and `Topic` subscriber stamps, and a claim of an old record never reads as a store fault (the old stamps
-    are simply lower; subscribers heal through `NotSubscribed`; test `NewMembershipDocumentStartsAboveStamps`). That
-    holds when the new store's clock is ahead of the old document's creation plus its changes; a store whose clock is
-    behind, or a provider whose `Now` is not Unix time, needs the floor set above the old document's version.
+    version max(the store's `Now` in milliseconds + 86,400,000, `DaServer:Membership:InitialVersion`), never 1: versions
+    move one per change, far slower than a clock, so every document starts a day past its store's clock and a later
+    document (membership moved to another store, a cluster renamed, a restore: operations.md) starts above every
+    placement version an earlier one stamped into records and `Topic` subscriber stamps, nested documents included.
+    A claim of an old record therefore never reads as a store fault (the old stamps are simply lower; subscribers heal
+    through `NotSubscribed`; tests `NewMembershipDocumentStartsAboveStamps`, `NewDocumentStartsADayAheadOfItsStore`).
+    `InitialVersion` is only for a store whose `Now` is not Unix time or whose clock is in doubt: then a trusted clock's
+    Unix milliseconds + 86,400,000, replaced at each new document, never left over from an earlier one.
     No seeds are needed for membership: the table is where nodes find each other.
   - **Failure detection**: every `Active` member probes up to `DaServer:Membership:ProbedNodes` (10) others, its
     successors on a ring of the active members' hashed identities, over the node links every
@@ -1045,7 +1046,8 @@ runtime acts on these classes only (section 2's Tick-end write), never on a stor
   write concern is not majority, a Redis with eviction, no AOF or no replica each lower it). It is logged (on `Strict`
   with the failure domain, `DaServer:Store:FailureDomain`: `zones`, `host` or `unknown`, which `DaServer.Aspire` sets
   for what it publishes and an external store leaves `unknown`; a `host` domain says the disk's or host's loss is not
-  covered; one key covers every store of the node, and when they sit in different domains it names the weakest, `unknown` below `host` below `zones`; test
+  covered; one key covers every store of the node, and when they sit in different domains it names the weakest, `unknown` below `host` below `zones` (understating a
+  store's domain is intended: it is the safe side); test
   `StartupLogNamesFailureDomain`), exported per
   store (`daserver.store.durability_class`, labelled `store` and `failure_domain`, which the Dashboard reads, 2 `Strict`, 1 `Replicated`, 0 `Local`, -1 `Unsafe`, and the class at
   the node's first serving start, `daserver.store.durability_class_started`, carried over a hot restart and
@@ -1394,7 +1396,7 @@ connection and every 10 s (`current_setting`, on the store's own role, so a per-
 `Unsafe`, a fresh start stays not ready before it joins and a serving node goes on under the `Local` rules, whatever
 the declaration or `AcceptDurability` says (section 4's durability classes); `synchronous_commit` `off` (a crash in
 place loses the last acknowledged commits) or `local` (no standby is waited for, so a failover may lose them) makes it
-at most `Local`, and `remote_write` at most `Replicated`; the one-host shape needs `on` too, since it is checked
+at most `Local`, and `remote_write` at most `Replicated`; the one-host shape needs `on` or `remote_apply` too, since it is checked
 without knowing the shape (test `UnsafeDurabilitySettingsDetected`). The effective class is the lower of the declaration and
 this check (test `DeclaredStrictVerifiesOnlyLocalDurability`); an undeclared store is `Local`, so an external instance
 never claims `Strict` unless its operator declares it (test `UndeclaredStoreIsLocal`). Each store is declared and

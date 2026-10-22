@@ -3467,10 +3467,12 @@ Replaced by ADR-098.
   no one acts on a membership write the store can still lose, save the store fault below: its writer only once it is
   `Landed` or shown by a `Confirm` run after its backend ended (each entry's `write_seq` says whether the node's write
   is in, ADR-101), and readers because the provider never lets a waiting commit become visible early. A new document
-  starts at a version taken from the store's `Now` in milliseconds, or `DaServer:Membership:InitialVersion` when
-  higher, so after membership moves to another store or the cluster is renamed its versions start above every
-  placement version an earlier document stamped into records and `Topic` subscriber stamps (the new store's clock
-  must be ahead of the old document's creation plus its changes, else the floor is set). A version lower than one
+  starts at max(the store's `Now` in milliseconds + 86,400,000, `DaServer:Membership:InitialVersion`): versions move
+  one per change, far slower than a clock, so after membership moves to another store, the cluster is renamed or a
+  store is restored, each new document starts above every placement version an earlier one stamped into records and
+  `Topic` subscriber stamps, nested documents included (`InitialVersion` only for a store whose `Now` is not Unix time
+  or whose clock is in doubt: a trusted clock + one day, replaced at each new document, test
+  `NewDocumentStartsADayAheadOfItsStore`). A version lower than one
   the node held, or a stored placement version still above the document after a re-read (a stale view only forwards
   from the fresh one), therefore means the store broke `Strict` or was put back in time (a failover that lost a commit: on PostgreSQL, a
   crash-restart in place or a fast shutdown ending the wait, followed by a failover before the standby received the
@@ -3539,7 +3541,7 @@ Replaced by ADR-098.
   deployment's failure domain and any failover the store performs (`DaServer:Store:FailureDomain`: three zones for what
   `DaServer.Aspire` publishes on Kubernetes, surviving the loss of any one instance; one host on Docker Compose, whose disk or host loss is not
   covered and which the start-up log line names; `unknown` below `host` below `zones`, one key per node naming the
-  weakest of its stores); below it the guarantee is
+  weakest of its stores, an understatement that is intended because it is safe); below it the guarantee is
   **fencing only**: the version is the fencing token, so two owners' writes never mix, while output leaves at the
   provider's wait and a failover or crash may lose recent writes, index entries and claims whose effects already
   left. `[Once]` and `AskUntilAnswered` hold except across such a loss and value flows keep their reconciliation. The
@@ -3555,8 +3557,8 @@ Replaced by ADR-098.
   serving, or by a hot restart's standby (a handover is not a start: arming is not refused for it, and the standby
   takes the worlds), nothing is refused: the framework runs the `Local` rules (fencing, output released as for
   `Local`), though no class guarantee holds across a crash of the database host while the setting is unsafe, and
-  `DaServerStoreUnsafe` fires 30 s after the node reports it. The class a node started serving with is carried over
-  a hot restart, so the standby compares against the old process's. Development and `TestCluster` are exempt with a
+  `DaServerStoreUnsafe` fires 30 s after the node reports it. Each store's class at the node's first serving start is
+  carried over a hot restart, so the standby compares each store against the old process's. Development and `TestCluster` are exempt with a
   warning: they start, export the class they found and `daserver.store.unsafe_exempt` 1, and never alert.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not

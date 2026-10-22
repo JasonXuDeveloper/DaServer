@@ -51,7 +51,7 @@ store when a cluster has more than one node).
   isolation exit, a node declared dead and a membership regression end with, and a crash start it again; an instance that handed over never exits: it parks in place). A hot restart restarts the instance
   that is not the node: `systemctl restart daserver@<other>`. A gateway or stateless group needs no pair.
 - **launchd** (macOS): two jobs per stateful node, each a plist with `Label`, `ProgramArguments`, `KeepAlive`
-  (`SuccessfulExit = false`, so the isolation exit's 75 and a crash restart it; a handed-over instance parks and never exits), `ExitTimeOut`
+  (`SuccessfulExit = false`, so code 75 (the isolation exit, a node declared dead, a membership regression) and a crash restart it; a handed-over instance parks and never exits), `ExitTimeOut`
   (launchd sends SIGTERM, then SIGKILL after it; launchd.plist(5) calls the default system-defined, so set it
   explicitly, at least the stop budget), `ThrottleInterval` 1 (launchd starts a job at most once per
   `ThrottleInterval`, 10 s by default), `WorkingDirectory` (the install directory, the content root; launchd starts in

@@ -352,7 +352,7 @@ Keep this file current: tick items when done, add items when scope changes.
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
       - membership and fencing: the membership table (Orleans' protocol, ADR-103, architecture.md section 4) as one
         versioned document through `IStore` (a conditional put per change, one `Get` per read: `MembershipViewReadAtomic`;
-        heartbeats as keys of their own, written only by their member; an `Unknown` write pending until its never-terminated backend is gone, then settled by a `Confirm` on the same session and the entry's `write_seq` (`MembershipWaitNeverTerminated`), the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a new document's version from the store's `Now` in ms or `DaServer:Membership:InitialVersion` when higher (`NewMembershipDocumentStartsAboveStamps`); a claim reading a higher
+        heartbeats as keys of their own, written only by their member; an `Unknown` write pending until its never-terminated backend is gone, then settled by a `Confirm` on the same session and the entry's `write_seq` (`MembershipWaitNeverTerminated`), the lease resting only on plain reads (`UnknownMembershipWriteNeverHoldsLease`); a new document's version max(the store's `Now` in ms + one day, `DaServer:Membership:InitialVersion`) (`NewMembershipDocumentStartsAboveStamps`, `NewDocumentStartsADayAheadOfItsStore`); a claim reading a higher
         stored placement version re-reading the document, a stale view only forwarding (`StaleViewClaimRereadsAndForwards`);
         a version below one the node held, or a stored placement still above a fresh document, a store fault: logged,
         counted, `DaServerMembershipRegressed`, the node freezing and fencing without writing and exiting with code 75
@@ -557,8 +557,8 @@ Keep this file current: tick items when done, add items when scope changes.
         `docker compose run --rm --no-deps rollout` on the internal network), systemd (the `daserver@.service` template with
         `DaServer__Instance=%i` and `/etc/daserver/%i.env`, both instances enabled, the directory from `tmpfiles.d`,
         `Restart=on-failure`), launchd (`kickstart -k` of the other job, `KeepAlive` with `SuccessfulExit = false`) and
-        Windows services (one service account or a `PipeSecurity` ACL; `sc failure` and `sc failureflag` for the isolation
-        exit's code 75) (the Kubernetes pod of two containers is W11); the retire fence and
+        Windows services (one service account or a `PipeSecurity` ACL; `sc failure` and `sc failureflag` for code 75: the
+        isolation exit, a node declared dead, a membership regression) (the Kubernetes pod of two containers is W11); the retire fence and
         clock rules: a retiring node excluded from rebalancing, a member whose clock moved back accepted again;
       - docs: operations.md and README lose `/admin/drain` and its command.
       Tests: `ShardChecksFrozenFlagBeforeTick`, `StashRestoredWithItsKey`, `AvatarNotInRecord`, `NetIdsCounterSurvivesCrash`,
@@ -641,7 +641,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `FenceMissingRejoinSetsMissedPushes`, `FlushedFramesAppliedBeforeTakeOver`, `SaveEntitiesOutsidePassOnly`,
       `RebalanceExcludesRetiring`, `ClockBackRejoinAccepted`, `ArmPreFlushesUnsaved`, `HandoverExcludesFrameworkSingletons`, `ComposeSameImageRollRecreates`, `ComposeDeployRecreatesNoNode`, `ComposeDeployRunsNewSchemaFirst`, `ComposeDropsAcceptedKeyByEmptyFile`,
       `ComposeNodeReachesExternalDatabase`, `NodePodsKeepDnsAndClusterEgress`, `ImageAndRevisionLabelInOneApply`, `ComposeHandoverVolumeWritable`,
-      `WindowsIsolationExitCode` (`ServiceBase.ExitCode` 75 seen by the service manager, on a Windows runner). New for the
+      `WindowsRestartExitCodeSeenByServiceManager` (`ServiceBase.ExitCode` 75 seen by the service manager for the isolation exit, a node declared dead and a membership regression, on a Windows runner). New for the
       redesigns: `CommitBarrierKeepsPairOrder`, `CommitWithNothingUnwrittenReleasesAtOnce`, `RepeatKeyAnswerWaitsForFirstWrite`,
       `OnceRunsOnceSameSequence`, `StaleSequenceRefused` (an attempt sent before the acknowledgement and delivered late,
       past a migration, never runs), `CumulativeAckPrunes`, `LostAckHarmless`, `ProbeClearsLostAck`,
