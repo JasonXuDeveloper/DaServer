@@ -186,11 +186,12 @@ groups:
       - alert: DaServerOnceStaleAsking
         # Target (roadmap W6): acknowledgements are sent from written state only, so an AskUntilAnswered can never be
         # answered Stale. One that is means a runtime defect: the ask stops and waits for reconciliation. The stopped
-        # asks are counted from the ask table's stopped rows by the sweeping node every minute, so the alert holds
+        # asks are counted by the sweeping node's ask census every minute (the ask index's keys and those roots' record
+        # headers), so the alert holds
         # across idle unloads and restarts until reconciliation clears them. The gauge's points carry `hosting_type` (the
         # server type hosting the actor type, from membership's hosted types) and `actor_type`; its series' resource
         # `type` is the sweeper's own, so the rule maps `hosting_type` onto `type` and silences by type match. A node
-        # exports it only while it sweeps and the count query succeeded (never a cached value, never while frozen), so a
+        # exports it only while it sweeps and the census read succeeded (never a cached value, never while frozen), so a
         # sweeper change leaves at most one stale series for the 3-minute window. The counter is exported at 0 from node
         # start, so the first Stale shows as an increase.
         expr: |
@@ -318,12 +319,14 @@ groups:
       - alert: DaServerStoreRolledBack
         # Target (roadmap W6, ADR-104): after a store failover (its term changed) the rollback audit found active roots
         # whose stored version is behind their last landed write: a store below Strict lost writes whose output may
-        # already have left. The roots were fenced and reloaded; the log line StoreRollback names them.
+        # already have left (or a write or Confirm found a root's own older version). The roots were fenced and reloaded;
+        # the log line StoreRollback names them. The counter is exported at 0 from node start, so a node's first rollback
+        # shows as an increase.
         expr: sum by (cluster, type, node) (increase(daserver_store_rollbacks_total[10m])) > 0
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.node }} found {{ $value }} actor(s) rolled back by a store failover"
+          summary: "{{ $labels.node }} found {{ $value | printf \"%.0f\" }} actor(s) rolled back by a store failover"
           description: "The store lost acknowledged writes in a failover (its durability class is below Strict). Reconcile the actors the StoreRollback log names: replies, [Once] answers and pushes released since the lost writes described state that no longer exists."
           daserver_limit: "0"
           daserver_unit: "roots/10m"
@@ -332,7 +335,7 @@ groups:
         # Target (roadmap W6, ADR-104): the store's effective durability class (2 Strict, 1 Replicated, 0 Local; the lower
         # of the provider's declaration and its periodic self-check) fell below the class the node started with: a
         # replication setting changed under a running cluster (no synchronous standby configured, eviction turned on).
-        # Labelled by store (actors, membership).
+        # Labelled by store (actors, membership, dashboard).
         expr: |
           min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class[2m]))
             < min by (cluster, type, node, store) (last_over_time(daserver_store_durability_class_started[2m]))
@@ -342,6 +345,24 @@ groups:
         annotations:
           summary: "{{ $labels.node }}'s {{ $labels.store }} store is below the durability it started with"
           description: "The store's self-check now finds a weaker class than at start: acknowledged writes may be lost in a failover. Restore the replication settings the self-check logs (DaServer:Store:SelfCheckInterval)."
+
+      - alert: DaServerMembershipDocumentLarge
+        # Target (roadmap W6, ADR-103): the membership document is written whole on every change, and a change that would
+        # pass the store's largest value (MaxValueBytes) is refused, so no death or re-placement could be written. Dead
+        # entries leave it at re-placement, so its size follows the live members; past half the limit the cluster has
+        # outgrown the store's value size (move membership to a store with larger values, or check that re-placement
+        # runs). Every node exports both gauges from its last read.
+        expr: |
+          max by (cluster) (last_over_time(daserver_membership_document_bytes[3m]))
+            > 0.5 * max by (cluster) (last_over_time(daserver_membership_document_limit_bytes[3m]))
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The membership document is past half the store's largest value"
+          description: "Membership changes rewrite the whole document; at the store's MaxValueBytes they are refused and no death or re-placement can be written. Check that re-placement moves dead entries out, or put membership on a store with a larger value limit (WithMembershipStore)."
+          daserver_limit: "0.5"
+          daserver_unit: "of MaxValueBytes"
 
       - alert: DaServerDeleteSendAfter
         # Target (roadmap W6): an item sent or asked after root.Delete() returned Ok, which reloads it. In an answer's
