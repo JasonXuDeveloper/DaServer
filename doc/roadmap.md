@@ -225,7 +225,7 @@ Keep this file current: tick items when done, add items when scope changes.
       `LatestNeverOvertakesOtherMessages`, `HeartbeatNotBehindLargeMessage`, `SmallAnswerInterleavesWithFragments`,
       `FragmentsReassembleInPairOrder`, `AckRidesOnData`, `LatestUnderBacklogStillDelivered` (100,000 senders at 30 Hz
       behind a backlog: each sender's message is handled), `StaleLatestAfterMigrationDropped` (an older one forwarded by a
-      tombstone after a newer one), `LatestSequenceContinuesAcrossReconnect`, `HotActorRefusesOnlyItsOwnMail` (its shard's
+      tombstone after a newer one), `LatestSequenceContinuesAcrossReconnect`, `StatelessLatestSendersIndependent`, `HotActorRefusesOnlyItsOwnMail` (its shard's
       neighbours keep receiving), `AskReservationRefusesLocally` (65,536 asks from one actor), `MaxPendingAnswersBusy`,
       `ReservationReleasedAtDeadline`, `OversizeReplyTravelsUnreserved`, `FenceHoldsBehindFragmentedGroupFrame`,
       `PushOrderToClientKeptAcrossFragments`, `FullLinkNeverDisconnects`, `ReassemblyBudgetBounded`,
@@ -304,6 +304,7 @@ Keep this file current: tick items when done, add items when scope changes.
         per partition, and an own-token older version in `NotApplied` or `Confirm` treated as a rollback
         (`NonStrictStoreRefusedWithoutOptIn`, `MembershipBelowStrictRefusedWithoutOptIn`, `SelfCheckLowersClass`,
         `RollbackAuditFindsActiveRoots`, `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`,
+        `RollbackPastClaimReported` (another token shown under a newer term fenced through the audit's finding path),
         `RolledBackEpochNeverMatchesOtherOwner`, `ActivationStampOrdersUnsavedReactivation`); the conformance kit in
         `DaServer.Testing` (contract, per-key linearizability with a shipped checker, fault injection through a kit TCP
         proxy, failover per class, self-check), run against `InMemoryStore` and PostgreSQL in CI (layer 4 nightly);
@@ -320,9 +321,11 @@ Keep this file current: tick items when done, add items when scope changes.
         `HalfOpenWriteEndsAtScaledDeadline`, `UnansweredCommitLookedUp`, `AbandonedBackendTerminatedBeforeRetry`,
         `HalfOpenBeforeCommitReleasesLocks`, `DataSourcesRequireReadWrite`); the roles step (`RolesStepIdempotent`,
         `RolesStepCreatesConfiguredSchema`, `RolesStepTakesOverExistingTables`, `RolesStepUpdatesPassword`,
-        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState`); the
+        `ConnectionLimitsSizedFromAutoscalerMax`, `MembershipRoleConnectionsReserved`, `RolesSeeStandbySyncState` (runtime, membership and Dashboard roles)); the
         self-check declaring `Strict` only with a synchronous standby and `DaServer:Store:PostgreSql:QuorumFailover`;
-        `Term` from the timeline (`TermChangesOnPromotion`); the BenchmarkDotNet gate
+        `Term` from the system identifier, the timeline and the postmaster's start time (`TermChangesOnPromotion`,
+        `TermChangesOnCrashRestart`), `fsync = off` refused and `synchronous_commit` below `local` declared `Local`
+        (`UnsafeDurabilitySettingsDetected`); the BenchmarkDotNet gate
         `GenericTableCommitThroughput` (the generic table kept only within 10% of typed columns at 1 and 5 ms of injected
         latency, else typed columns behind the same primitives); the wire family's variants (Aurora, AlloyDB, Neon,
         PolarDB for PostgreSQL, CockroachDB, YugabyteDB) named supported only once the kit passes against each;
@@ -331,9 +334,11 @@ Keep this file current: tick items when done, add items when scope changes.
         heartbeats as keys of their own, written only by their member; an `Unknown` write settled by `Confirm`; a lower
         version read after a failover adopted and logged: `MembershipVersionRegressionAfterFailoverAdopted`, the highest
         version held raised past, with every type's placement version, before the next claim, a claim reading a higher
-        stored placement version raising past it (`StrandedPlacementRaisedPast`), and the document re-read after a
+        stored placement version re-reading the document and raising past it only when the fresh one is still below
+        (`StrandedPlacementRaisedPast`, `StaleViewClaimRereadsNotRaises`), and the document re-read after a
         reconnect; `Dead` entries moved to keys of their own at re-placement and the document's size alerted
-        (`MembershipDocumentBoundedUnderChurn`); one membership write in
+        (`MembershipDocumentBoundedUnderChurn`), a node whose entry left the document stopping, peers refusing a
+        generation their view does not list (`ReplacedNodeAbsentFromDocumentStops`); one membership write in
         flight, heartbeats skipped while one is pending, its own store client with a connection kept for reads:
         `MembershipReadsAnswerWhileCommitWaits`) and the in-memory store (one node, `TestCluster`); joining (generation
         max(Unix ms, recorded max + 1), older generations of the name written `Dead`, connectivity checked before

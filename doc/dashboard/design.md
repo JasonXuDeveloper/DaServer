@@ -426,8 +426,9 @@ Every action runs on the Dashboard's server, never in the browser, so closing th
   rollout and a node's restart alike (a Resize does not, above: it is idempotent and per node). While one runs, the type's other actions wait, and their buttons say which action
   is running. The lock is a key per type in the Dashboard's store (`x|cluster|lock|type`), put only when absent and only after
   the action's own key (Requested, with its lease) has landed, so one unfinished action holds a type; a refused lock
-  makes the action Failed, and a lock whose action key is absent is free, so a replica that crashes between the two
-  writes never leaves a type locked; an action on the whole cluster (a config push) locks the sentinel type `*cluster`,
+  makes the action Failed unless the lock names that action itself (a replica that took its lease over after the lock
+  landed holds it), and a lock whose action key is absent is free (whoever finds it deletes it, compared on its
+  version, before putting its own), so a replica that crashes between the two writes never leaves a type locked; an action on the whole cluster (a config push) locks the sentinel type `*cluster`,
   and the two kinds exclude each other: after taking its key, a type's action reads `*cluster`'s and a config push
   scans every type's, and one that finds the other gives its own key back and is refused. Two that race may both be
   refused, never both run ([architecture.md](../drafts/architecture.md#the-framework-over-the-contract)). A push refused behind a type names the type, its

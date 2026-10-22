@@ -2152,7 +2152,7 @@ Replaced by ADR-098.
     (ADR-045). Only the runtime computes `NextDue`; the package writes `WakeAt` on its reminders and registers a wake
     handler that delivers `Reminded<T>` in the firing item.
   - **`DaServer.Topics`**: a built-in `Topic(long Id)` actor type with a persisted table of subscribers and their
-    activation epochs; `Subscribe`, `Unsubscribe` and `Publish` on `Entity` send the Topic one-way package messages
+    activation stamps; `Subscribe`, `Unsubscribe` and `Publish` on `Entity` send the Topic one-way package messages
     (exempt from `[From<…>]`, since any actor type sends them); `Publish` is serialized once and sent as one frame per
     subscriber node. Subscribers renew their own `Subscription` buffer every `DaServer:Topics:RenewInterval`, so a
     crash or a lost message costs at most two intervals of missed publishes (the renewal scans in slices, and a row
@@ -2744,7 +2744,7 @@ Replaced by ADR-098.
   for the order of an answer and a later message, and asks Loot from the map's root; roadmap W4 builds the links and `[Latest]` (tests
   `AnswerThenMessageArriveInSendOrder`, `LatestNeverOvertakesOtherMessages`, `LatestUnderBacklogStillDelivered`,
   `StaleLatestAfterMigrationDropped`, `HotActorRefusesOnlyItsOwnMail`, `AskReservationRefusesLocally`,
-  `FenceHoldsBehindFragmentedGroupFrame`, `ReassemblyBudgetBounded`, `DroppedPushMarksMissedPushes`,
+  `FenceHoldsBehindFragmentedGroupFrame`, `ReassemblyBudgetBounded`, `DroppedPushAtLinkMarksMissedPushes`,
   `SlowClientConflatedNotDisconnected`, `SmallAnswerInterleavesWithFragments`, …),
   with BenchmarkDotNet's system calls per message at 10,000 connections and a small answer's latency behind a 4 MB
   message on one link.
@@ -3270,13 +3270,15 @@ Replaced by ADR-098.
     quorum-aware failover (`DaServer:Store:PostgreSql:QuorumFailover`, which `DaServer.Aspire` sets for what it
     publishes: a primary and two standbys in three zones, so maintenance on one standby pauses nothing; the samples add
     a PodDisruptionBudget through the publisher hook). `pg_stat_replication` shows `state` and `sync_state` only to
-    members of `pg_read_all_stats`, so the roles step grants it to the runtime and membership roles (without it a
-    production node never sees `Strict`). The local single-node database is `Local` and exempt. The minimum is
-    PostgreSQL 16.
-  - **`Term` is `(system_identifier, timeline)`**, read when a connection opens: a promotion moves the primary to a
-    new timeline and breaks every connection, so every outcome after a failover carries the new term (the current WAL
-    file name's timeline, not `pg_control_checkpoint()`'s, which lags until the first checkpoint after promotion).
-    One partition.
+    members of `pg_read_all_stats`, so the roles step grants it to the runtime, membership and Dashboard roles (without
+    it a production node or Dashboard never sees `Strict`). The local single-node database is `Local` and exempt.
+    Below `Strict` the self-check refuses `fsync` or `full_page_writes` `off` (a crash may corrupt rather than lose a
+    findable suffix) and declares `synchronous_commit` `off` or `local` as `Local`. The minimum is PostgreSQL 16.
+  - **`Term` is `(system_identifier, timeline, postmaster start time)`**, read when a connection opens: a promotion
+    moves the primary to a new timeline and a restart in place starts a new postmaster, and both break every
+    connection, so every outcome after either carries the new term, and a crash restart that lost acknowledged commits
+    on the same timeline (`synchronous_commit = off`) still starts the rollback audit (the current WAL file name's
+    timeline, not `pg_control_checkpoint()`'s, which lags until the first checkpoint after promotion). One partition.
   - **Every data source connects only to the primary**: the runtime's, membership's and the Dashboard's connection
     strings carry `Target Session Attributes=read-write` (`DaServer.Aspire` adds it) or name a single read-write
     endpoint, so a demoted node is never written to and no read is answered by a standby.
@@ -3454,14 +3456,18 @@ Replaced by ADR-098.
   each world `Confirm`s its active persisted roots in that partition, fences, reloads and reports any found behind its
   last landed write, and puts its active roots' due and ask entries again; `daserver.store.rollbacks`,
   `DaServerStoreRolledBack`) makes a rollback of an active actor visible. A write or `Confirm` that shows a root's own
-  token at an older generation is the same finding, so a rollback is never mistaken for a race and written over.
+  token at an older generation is the same finding, so a rollback is never mistaken for a race and written over, and
+  so is another token shown under a newer term than the root's last landed write (the rollback also undid the claim).
+  A term changes on every event that can lose acknowledged writes, a crash restart in place included (PostgreSQL's
+  term carries the postmaster's start time). A setting that can corrupt rather than roll back (`fsync = off`) is
+  refused in every class.
 - Alternatives: refusing every store below `Strict` (excludes most Redis and MySQL estates); accepting them silently;
   per-store waits (`WAIT`, semi-sync, `w: majority`) presented as equal (they are how a provider reaches its class, not
   a replacement for stating it).
 - Consequences: R13 and E3 restated per class; the Dashboard and the alert rules show the effective class; roots
   written and unloaded before a failover below `Strict` lose writes invisibly, which the documentation says. Tests
   `NonStrictStoreRefusedWithoutOptIn`, `SelfCheckLowersClass`, `RollbackAuditFindsActiveRoots`,
-  `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`.
+  `RollbackAuditPerPartition`, `OwnOlderVersionIsRollback`, `RollbackPastClaimReported`, `TermChangesOnCrashRestart`.
 
 ## ADR-105 Every row has one writer; a deleted actor leaves a tombstone (amends ADR-099)
 - Context: two writes spanned actors: a receiver's write took `FOR KEY SHARE` on its sender's record so a forgotten
